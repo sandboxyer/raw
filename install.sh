@@ -25,6 +25,9 @@ LOG_FILE="/var/log/rawjs-install.log"
 LOG_MODE=false
 BACKUP_DIR="/usr/local/etc/rawjs-runtime_old_$(date +%s)"
 
+# Include .git directory (default: false)
+INCLUDE_GIT=false
+
 # =============================================================================
 # BUILD SYSTEM VARIABLES (modular addition)
 # =============================================================================
@@ -277,7 +280,7 @@ install_system_packages() {
 }
 
 # -----------------------------------------------------------------------------
-# NEW FUNCTION: Preserve config files before removal
+# Preserve config files before removal
 # -----------------------------------------------------------------------------
 preserve_config_files() {
   PRESERVED_CONFIGS=""
@@ -290,7 +293,7 @@ preserve_config_files() {
 }
 
 # -----------------------------------------------------------------------------
-# NEW FUNCTION: Restore config files after installation
+# Restore config files after installation
 # -----------------------------------------------------------------------------
 restore_config_files() {
   if [ -n "$PRESERVED_CONFIGS" ]; then
@@ -304,7 +307,7 @@ restore_config_files() {
 }
 
 # -----------------------------------------------------------------------------
-# FILE COPYING
+# FILE COPYING - Using tar with explicit exclusions (most reliable)
 # -----------------------------------------------------------------------------
 copy_files() {
   local src_dir="$1"
@@ -314,33 +317,56 @@ copy_files() {
   mkdir -p "$dest_dir"
   log_message "Copying $description files to $dest_dir..."
 
-  # Build exclude args for find (ash-compatible)
-  local exclude_expr=""
-  exclude_expr="$exclude_expr ! -path './.git/*'"
-  exclude_expr="$exclude_expr ! -name 'build_output.asm'"
-  exclude_expr="$exclude_expr ! -path './dev/*'"
+  # Build tar exclusion arguments
+  local tar_excludes="--exclude='./.git'"
+  tar_excludes="$tar_excludes --exclude='./.base_pool'"
+  tar_excludes="$tar_excludes --exclude='./.router_locks'"
+  tar_excludes="$tar_excludes --exclude='./.terminals'"
+  tar_excludes="$tar_excludes --exclude='./.runtime_locks'"
+  tar_excludes="$tar_excludes --exclude='./dev'"
+  tar_excludes="$tar_excludes --exclude='./dev_*'"
+  tar_excludes="$tar_excludes --exclude='./build_output.asm'"
+  tar_excludes="$tar_excludes --exclude='./.rawjs_private'"
+  tar_excludes="$tar_excludes --exclude='./output.js'"
+  tar_excludes="$tar_excludes --exclude='./arch_output'"
 
+  # If INCLUDE_GIT is true, don't exclude .git
+  if [ "$INCLUDE_GIT" = true ]; then
+    tar_excludes=$(echo "$tar_excludes" | sed "s|--exclude='./.git'||")
+  fi
+
+  # Use tar to copy while excluding directories
   if [ "$LOG_MODE" = true ]; then
-    (cd "$src_dir" && find . -type f $exclude_expr | while read file; do
-      dest_file="$dest_dir/$file"
-      mkdir -p "$(dirname "$dest_file")"
-      cp -v "$file" "$dest_file" 2>&1
-    done) | tee -a "$LOG_FILE" &
+    (cd "$src_dir" && eval "tar $tar_excludes -cf - .") | (cd "$dest_dir" && tar -xvf - 2>&1 | tee -a "$LOG_FILE") &
     copy_pid=$!
   else
-    (cd "$src_dir" && find . -type f $exclude_expr | while read file; do
-      dest_file="$dest_dir/$file"
-      mkdir -p "$(dirname "$dest_file")"
-      cp "$file" "$dest_file" 2>/dev/null
-    done) &
+    (cd "$src_dir" && eval "tar $tar_excludes -cf - .") | (cd "$dest_dir" && tar -xf - 2>/dev/null) &
     copy_pid=$!
   fi
   show_progress "Copying $description files" $copy_pid
 
-  local src_count=$(cd "$src_dir" && find . -type f $exclude_expr | wc -l)
   local dest_count=$(find "$dest_dir" -type f | wc -l)
-  log_message "Copied $dest_count of $src_count files"
+  log_message "Copied $dest_count files"
   [ "$dest_count" -eq 0 ] && log_message "ERROR: No files copied!" && return 1
+  
+  # Ensure excluded directories are NOT present
+  if [ -d "$dest_dir/.base_pool" ]; then
+    log_message "WARNING: .base_pool was copied, removing..."
+    rm -rf "$dest_dir/.base_pool"
+  fi
+  if [ -d "$dest_dir/.router_locks" ]; then
+    log_message "WARNING: .router_locks was copied, removing..."
+    rm -rf "$dest_dir/.router_locks"
+  fi
+  if [ -d "$dest_dir/.terminals" ]; then
+    log_message "WARNING: .terminals was copied, removing..."
+    rm -rf "$dest_dir/.terminals"
+  fi
+  if [ -d "$dest_dir/.runtime_locks" ]; then
+    log_message "WARNING: .runtime_locks was copied, removing..."
+    rm -rf "$dest_dir/.runtime_locks"
+  fi
+  
   return 0
 }
 
@@ -425,6 +451,13 @@ verify_rawjs_structure() {
   echo "✓ Raw.sh found"
   [ -f "$install_dir/output.js" ] && echo "✓ output.js found" || echo "  Note: output.js not found"
   [ -f "$install_dir/test.js" ] && echo "✓ test.js found" || echo "  Note: test.js not found"
+  
+  # Verify that excluded directories are NOT present
+  [ -d "$install_dir/.base_pool" ] && echo "⚠ Warning: .base_pool directory found (should be excluded)" || echo "✓ .base_pool correctly excluded"
+  [ -d "$install_dir/.router_locks" ] && echo "⚠ Warning: .router_locks directory found (should be excluded)" || echo "✓ .router_locks correctly excluded"
+  [ -d "$install_dir/.terminals" ] && echo "⚠ Warning: .terminals directory found (should be excluded)" || echo "✓ .terminals correctly excluded"
+  [ -d "$install_dir/.runtime_locks" ] && echo "⚠ Warning: .runtime_locks directory found (should be excluded)" || echo "✓ .runtime_locks correctly excluded"
+  
   return 0
 }
 
@@ -459,7 +492,7 @@ verify_basm_structure() {
 remove_installation() {
   log_message "Removing existing installation..."
   
-  # NEW: Preserve config files before removal
+  # Preserve config files before removal
   preserve_config_files
   
   [ -L "$BIN_DIR/raw" ] && rm -f "$BIN_DIR/raw" && log_message "Removed symlink: raw"
@@ -1705,6 +1738,7 @@ show_help() {
   echo "Options:"
   echo "  -h, --help            Show this help"
   echo "  -log                  Enable installation logging"
+  echo "  --with-git            Include .git directory in installation (default: exclude)"
   echo
   echo "BUILD OPTIONS (similar to EasyAI):"
   echo "  --build [name]        Create a build from the last commit (optional: saved configuration name)"
@@ -1757,6 +1791,7 @@ for arg in "$@"; do
   case "$arg" in
     -h|--help) show_help ;;
     -log) LOG_MODE=true; touch "$LOG_FILE" ;;
+    --with-git) INCLUDE_GIT=true ;;
     *)
       # Check if this argument is a .js file (not a flag)
       case "$arg" in
@@ -1850,7 +1885,7 @@ if [ "$INSTALL_BASM" = true ]; then
   fi
 fi
 
-# NEW: Restore config files after installation
+# Restore config files after installation
 restore_config_files
 
 # Create wrappers
@@ -1861,6 +1896,19 @@ cleanup
 
 # Initialize RawJS
 log_message "Initializing RawJS environment..."
+
+echo
+echo "Warming up RawJS base pool..."
+if [ -f "$BIN_DIR/raw" ] && [ -x "$BIN_DIR/raw" ]; then
+  if raw --start; then
+    log_message "✓ RawJS base pool warmed successfully"
+  else
+    log_message "⚠ RawJS base pool warm-up had issues"
+  fi
+else
+  log_message "⚠ raw command not found, cannot warm base pool"
+fi
+
 echo
 echo "Running 'raw --reset' to build initial directory structure..."
 if [ -f "$BIN_DIR/raw" ] && [ -x "$BIN_DIR/raw" ]; then

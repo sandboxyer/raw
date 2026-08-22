@@ -19,3 +19,6 @@ buildsaves.cfg
 build/
 result
 *.json
+.base_pool/
+.router_locks/
+.terminals/
