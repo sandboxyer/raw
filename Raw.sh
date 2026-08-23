@@ -583,13 +583,8 @@ if [ $# -gt 0 ]; then
             # Store remaining arguments as tool args
             TOOL_ARGS="$@"
         fi
-    elif [ "$1" = "--tools" ] || [ "$1" = "--stools" ] || [ "$1" = "--stool" ]; then
-        # Support both --tools (full) and --stools/--stool (compact)
-        if [ "$1" = "--stools" ] || [ "$1" = "--stool" ]; then
-            SPECIAL_MODE="--stools"
-        else
-            SPECIAL_MODE="--tools"
-        fi
+    elif [ "$1" = "--tools" ]; then
+        SPECIAL_MODE="--tools"
         shift
     elif [ "$1" = "--asm" ]; then
         ASM_MODE="true"
@@ -669,7 +664,7 @@ if [ $# -gt 0 ]; then
         fi
     else
         # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
-        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ] && [ "$1" != "--cli" ] && [ "$1" != "--dev" ]; then
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--cli" ] && [ "$1" != "--dev" ]; then
             # Extract tool name by removing leading --
             TOOL_COMMAND="${1#--}"
             TOOL_MODE="true"
@@ -824,6 +819,7 @@ INHERITED_RUNTIME=0
 # Define the order of groups (first group appears first)
 TOOL_GROUPS_ORDER=(
     "Main"
+    "Control"
 )
 
 # Define tools for "Main" group (in desired order)
@@ -835,11 +831,58 @@ TOOL_GROUP_Main_TOOLS=(
     "bin"
 )
 
+# Define tools for "Control" group (in desired order)
+TOOL_GROUP_Control_TOOLS=(
+    "reset"
+    "test"
+    "cli"
+    "dev"
+    "version"
+    "asm"
+    "start"
+)
+
 # Define color for "Main" group
 TOOL_GROUP_Main_COLOR="1;36"  # Light Cyan
 
+# Define color for "Control" group
+TOOL_GROUP_Control_COLOR="1;35"  # Light Purple
+
 # Define color for default "General" group
 TOOL_GROUP_General_COLOR="1;33"  # Yellow
+
+# ============================================
+# CUSTOM TOOL DESCRIPTIONS
+# ============================================
+# This map allows a tool to have a fixed description.
+# This is important for control/critical commands:
+# they are NEVER executed just to generate a description.
+#
+# Two options when creating a tool:
+#   1. Add no entry here -> description is obtained by running the tool
+#   2. Add an entry here  -> description is custom and the tool is not run
+# ============================================
+declare -A TOOL_CUSTOM_DESCRIPTIONS=(
+    ["min"]="Minify a JS file"
+    ["polish"]="Polish the minified output"
+    ["arch"]="Generate architecture output"
+    ["build"]="Build assembly output from architecture"
+    ["bin"]="Generate a binary from build_output.asm"
+    ["reset"]="Reset runtime pool and rebuild all dev directories"
+    ["test"]="Run the project test suite"
+    ["cli"]="Launch the interactive RawJS CLI"
+    ["dev"]="Toggle developer mode (CLI vs usage screen)"
+    ["version"]="Print RawJS version"
+    ["asm"]="Copy generated build_output.asm to current directory"
+    ["start"]="Pre-warm/start the private base pool"
+    ["chain"]="Run chain checks"
+    ["clean"]="Clean build artifacts"
+    ["dual"]="Run dual processing"
+    ["emb"]="Run embedding tool"
+    ["info"]="Show JS file information"
+    ["jsclean"]="Clean JS temporary files"
+    ["testcheck"]="Run test checks"
+)
 
 # ============================================
 # TOOL WORKING DIRECTORY CONFIGURATION
@@ -1783,7 +1826,6 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --<tool> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tools${NC}"
-    echo -e "${YELLOW}       bash Raw.sh --stools${NC}"
     echo -e "${YELLOW}       bash Raw.sh --version${NC}"
     echo -e "${YELLOW}       bash Raw.sh --asm [path/to/file.js] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --bin [output_name] <path/to/file.js> [args...]${NC}"
@@ -1933,7 +1975,8 @@ handle_cli() {
             echo -e "${YELLOW}errorgen detected. Writing full transcript to .rawjs_cli.js and generating logs...${NC}"
 
             # Write the complete transcript (all lines typed) to the file
-            printf "%s\n" "$full_transcript" > "$cli_js_file"
+            printf "%s
+" "$full_transcript" > "$cli_js_file"
 
             local log_file="$CALLER_DIR/.rawjs_cli.log.txt"
             local verbose_file="$CALLER_DIR/.rawjs_cli.verbose.txt"
@@ -2365,6 +2408,12 @@ get_group_color() {
 get_tool_description() {
     local tool_name="$1"
 
+    # Custom descriptions take priority and avoid executing critical commands.
+    if [ -n "${TOOL_CUSTOM_DESCRIPTIONS[$tool_name]:-}" ]; then
+        echo "${TOOL_CUSTOM_DESCRIPTIONS[$tool_name]}"
+        return 0
+    fi
+
     # Check if tool function exists
     if ! declare -f "tool_${tool_name}" > /dev/null 2>&1; then
         echo "<no description>"
@@ -2410,8 +2459,8 @@ get_tools_for_group() {
     if [ "$group_name" != "General" ] && [ ${#TOOL_GROUPS_ORDER[@]} -gt 0 ]; then
         # Use the defined order from the group array
         for tool_name in "${!group_array_name}"; do
-            # Check if tool function actually exists
-            if declare -f "tool_${tool_name}" > /dev/null 2>&1; then
+            # Include tools with a real handler OR a custom description
+            if declare -f "tool_${tool_name}" > /dev/null 2>&1 || [ -n "${TOOL_CUSTOM_DESCRIPTIONS[$tool_name]:-}" ]; then
                 group_tools+=("$tool_name")
             fi
         done
@@ -2433,7 +2482,8 @@ get_tools_for_group() {
     fi
 
     # Return the array as newline-separated string
-    printf '%s\n' "${group_tools[@]}"
+    printf '%s
+' "${group_tools[@]}"
 }
 
 # Function: Display formatted tool list with groups and colors (full version)
@@ -2451,6 +2501,13 @@ display_tool_list_with_groups() {
         fi
     done <<< "$all_tools"
 
+    # Also consider custom description tools (which may have no tool function)
+    for tool_name in "${!TOOL_CUSTOM_DESCRIPTIONS[@]}"; do
+        if [ ${#tool_name} -gt $max_tool_length ]; then
+            max_tool_length=${#tool_name}
+        fi
+    done
+
     # Create temp directory for parallel description fetching
     local temp_directory=$(mktemp -d)
     local process_ids=()
@@ -2465,6 +2522,13 @@ display_tool_list_with_groups() {
             process_ids+=($!)
         fi
     done <<< "$all_tools"
+
+    # Also fetch custom descriptions for tools that don't have a function
+    for tool_name in "${!TOOL_CUSTOM_DESCRIPTIONS[@]}"; do
+        if ! declare -f "tool_${tool_name}" > /dev/null 2>&1; then
+            echo "${TOOL_CUSTOM_DESCRIPTIONS[$tool_name]}" > "$temp_directory/${tool_name}.description"
+        fi
+    done
 
     # Wait for all background processes to complete
     for process_id in "${process_ids[@]}"; do
@@ -2499,6 +2563,8 @@ display_tool_list_with_groups() {
                     local description="<no description>"
                     if [ -f "$temp_directory/${tool_name}.description" ]; then
                         description=$(cat "$temp_directory/${tool_name}.description")
+                    else
+                        description=$(get_tool_description "$tool_name")
                     fi
 
                     # Truncate description if too long
@@ -2510,7 +2576,8 @@ display_tool_list_with_groups() {
                     local working_directory=$(get_tool_working_dir "$tool_name")
 
                     # Display tool with group color
-                    printf "  \033[${group_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m\n" \
+                    printf "  \033[${group_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m
+" \
                         "$tool_name" "$description" "$working_directory"
                 fi
             done <<< "$group_tools_list"
@@ -2534,6 +2601,8 @@ display_tool_list_with_groups() {
                 local description="<no description>"
                 if [ -f "$temp_directory/${tool_name}.description" ]; then
                     description=$(cat "$temp_directory/${tool_name}.description")
+                else
+                    description=$(get_tool_description "$tool_name")
                 fi
 
                 # Truncate description if too long
@@ -2545,7 +2614,8 @@ display_tool_list_with_groups() {
                 local working_directory=$(get_tool_working_dir "$tool_name")
 
                 # Display tool with general color
-                printf "  \033[${general_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m\n" \
+                printf "  \033[${general_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m
+" \
                     "$tool_name" "$description" "$working_directory"
             fi
         done <<< "$general_tools_list"
@@ -2566,7 +2636,7 @@ display_tool_list_with_groups() {
     echo -e "  \033[0;37mfile\033[0m    - Execute from the tool file's own directory"
 }
 
-# Function: Display compact tool list (for --stools/--stool)
+# Function: Display compact tool list (for the default screen)
 # Designed to fit in extremely small terminals with color toggling for clarity
 display_compact_tool_list() {
     # Build the tool-group map
@@ -2649,6 +2719,15 @@ display_compact_tool_list() {
     echo ""
     echo -e "\033[0;90mUse --tools for detailed view\033[0m"
     echo -e "\033[1;33mUsage: --<tool> [args]\033[0m"
+}
+
+# Function: Display the default minimalist screen (no arguments)
+# Shows a compact example and the complete categorized tool list.
+display_default_screen() {
+    echo ""
+    echo -e "\033[1;36mraw file.js\033[0m"
+    echo ""
+    display_compact_tool_list
 }
 
 # ============================================
@@ -3071,12 +3150,9 @@ main_flow() {
         exit $?
     fi
 
-    # Step 2: Check for --tools or --stools/--stool special mode
+    # Step 2: Check for --tools special mode
     if [ "$SPECIAL_MODE" = "--tools" ]; then
         display_tool_list_with_groups
-        exit 0
-    elif [ "$SPECIAL_MODE" = "--stools" ]; then
-        display_compact_tool_list
         exit 0
     fi
 
@@ -3203,7 +3279,7 @@ main_flow() {
             handle_cli
             exit $?
         else
-            show_usage
+            display_default_screen
             exit 1
         fi
     fi
