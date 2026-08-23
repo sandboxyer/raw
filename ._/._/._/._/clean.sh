@@ -64,9 +64,56 @@ clean_recursive() {
     return $total_count
 }
 
+# Function to clean pool system directories
+clean_pool_system() {
+    local dir="$1"
+    local pool_dirs_removed=0
+    
+    echo ""
+    echo "Cleaning pool system directories from $dir"
+    echo "---------------------------------------------"
+    
+    # Clean terminal directories
+    if [ -d "$dir/.terminals" ]; then
+        rm -rf "$dir/.terminals"
+        echo "  Removed .terminals directory"
+        pool_dirs_removed=$((pool_dirs_removed + 1))
+    fi
+    
+    # Clean base pool directories
+    if [ -d "$dir/.base_pool" ]; then
+        rm -rf "$dir/.base_pool"
+        echo "  Removed .base_pool directory"
+        pool_dirs_removed=$((pool_dirs_removed + 1))
+    fi
+    
+    # Clean router locks
+    if [ -d "$dir/.router_locks" ]; then
+        rm -rf "$dir/.router_locks"
+        echo "  Removed .router_locks directory"
+        pool_dirs_removed=$((pool_dirs_removed + 1))
+    fi
+    
+    # Clean runtime locks
+    if [ -d "$dir/.runtime_locks" ]; then
+        rm -rf "$dir/.runtime_locks"
+        echo "  Removed .runtime_locks directory"
+        pool_dirs_removed=$((pool_dirs_removed + 1))
+    fi
+    
+    if [ $pool_dirs_removed -eq 0 ]; then
+        echo "  No pool system directories found"
+    else
+        echo "  Removed $pool_dirs_removed pool system director(y/ies)"
+    fi
+    
+    return $pool_dirs_removed
+}
+
 # Get the directory where the script is being called from
 TARGET_DIR="$(pwd)"
 TOTAL_FILES=0
+POOL_DIRS_REMOVED=0
 
 # Check if we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
@@ -80,17 +127,28 @@ if [[ "$1" == "--full" ]]; then
     echo "-----------------------------------------------------"
     clean_recursive "$TARGET_DIR"
     TOTAL_FILES=$?
+    
+    # Clean pool system directories
+    clean_pool_system "$TARGET_DIR"
+    POOL_DIRS_REMOVED=$?
+    
     echo "-----------------------------------------------------"
     echo "Successfully removed $TOTAL_FILES gitignored file(s) recursively from $TARGET_DIR"
+    echo "Removed $POOL_DIRS_REMOVED pool system director(y/ies)"
 else
     echo "Cleaning gitignored files from $TARGET_DIR (non-recursive)"
     echo "----------------------------------------------------------"
     clean_single "$TARGET_DIR"
     TOTAL_FILES=$?
+    
+    # Clean pool system directories
+    clean_pool_system "$TARGET_DIR"
+    POOL_DIRS_REMOVED=$?
+    
     echo "----------------------------------------------------------"
-    if [ $TOTAL_FILES -eq 0 ]; then
-        echo "No gitignored files found in $TARGET_DIR"
+    if [ $TOTAL_FILES -eq 0 ] && [ $POOL_DIRS_REMOVED -eq 0 ]; then
+        echo "No gitignored files or pool system directories found in $TARGET_DIR"
     else
-        echo "Successfully removed $TOTAL_FILES gitignored file(s) from $TARGET_DIR"
+        echo "Successfully removed $TOTAL_FILES gitignored file(s) and $POOL_DIRS_REMOVED pool system director(y/ies) from $TARGET_DIR"
     fi
 fi
