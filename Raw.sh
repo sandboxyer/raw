@@ -353,6 +353,35 @@ if [ -z "${RAWJS_PRIVATE_MODE:-}" ] && [ ! -f "$SCRIPT_DIR/.rawjs_private" ]; th
     fi
 
     # ---------------------------------------------------------------------
+    # Handle --tmp special mode
+    # ---------------------------------------------------------------------
+    if [ "$1" = "--tmp" ]; then
+        shift
+
+        # Create a fresh temporary private environment (not tied to terminal)
+        ROUTER_TMP_ROOT="$SCRIPT_DIR/.terminals/.tmp_$(date +%s)_$$_$RANDOM"
+        rm -rf "$ROUTER_TMP_ROOT" 2>/dev/null
+        if ! router_create_single_base "$ROUTER_TMP_ROOT"; then
+            rm -rf "$ROUTER_TMP_ROOT" 2>/dev/null
+            echo "Failed to initialize temporary environment" >&2
+            exit 1
+        fi
+
+        # Sync global config if it exists
+        if [ -f "$ROUTER_GLOBAL_CONFIG" ]; then
+            cp "$ROUTER_GLOBAL_CONFIG" "$ROUTER_TMP_ROOT/config.txt" 2>/dev/null
+        fi
+
+        # Run Raw.sh inside the temporary private environment and cleanup after
+        export RAWJS_PRIVATE_MODE=1
+        export RAWJS_PRIVATE_ROOT="$ROUTER_TMP_ROOT"
+        bash "$ROUTER_TMP_ROOT/Raw.sh" "$@"
+        tmp_exit_code=$?
+        rm -rf "$ROUTER_TMP_ROOT" 2>/dev/null
+        exit $tmp_exit_code
+    fi
+
+    # ---------------------------------------------------------------------
     # Normal terminal connection flow
     # ---------------------------------------------------------------------
 
