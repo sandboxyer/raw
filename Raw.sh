@@ -1856,6 +1856,17 @@ process_js_file() {
     return 0
 }
 
+# NEW: Function to check if a file contains arch_output format markers
+is_arch_output_file() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+    # Check for the presence of arch_output tags (<js-start> or <chain-start>)
+    grep -q -m1 -E '<js-start>|<chain-start>' "$file" 2>/dev/null
+    return $?
+}
+
 # Function: Copy build_output.asm to caller's directory
 copy_asm_to_caller() {
     local source_asm="$WORKING_DIRECTORY/build_output.asm"
@@ -3240,14 +3251,27 @@ main_flow() {
         OUTPUT_JS="$SCRIPT_DIR/output.js"
         ARCH_OUTPUT="$SCRIPT_DIR/arch_output"
 
-        # Execute the processing pipeline (silent steps)
-        execute_file "silent" "./._/min/min" "$JS_FILE_PATH"
-        execute_file "silent" "./._/min/polish.sh" "$OUTPUT_JS"
-        execute_file "silent" "./build"
-        mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm"
-        execute_file "silent" "./arch" "$OUTPUT_JS"
-        mv_file "arch_output" "$WORKING_DIRECTORY/arch_output"
-        rm_file "$SCRIPT_DIR/output.js"
+        # NEW: Detect if the input file is already an arch_output file
+        local arch_output_detected=0
+        if is_arch_output_file "$JS_FILE_PATH"; then
+            arch_output_detected=1
+        fi
+
+        if [ "$arch_output_detected" = "1" ]; then
+            # Skip min, polish, arch and use the file directly as arch_output
+            execute_file "silent" "./build"
+            mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm"
+            cp_file "$JS_FILE_PATH" "$WORKING_DIRECTORY/arch_output"
+        else
+            # Full pipeline
+            execute_file "silent" "./._/min/min" "$JS_FILE_PATH"
+            execute_file "silent" "./._/min/polish.sh" "$OUTPUT_JS"
+            execute_file "silent" "./build"
+            mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm"
+            execute_file "silent" "./arch" "$OUTPUT_JS"
+            mv_file "arch_output" "$WORKING_DIRECTORY/arch_output"
+            rm_file "$SCRIPT_DIR/output.js"
+        fi
 
         # Execute tree/build.sh with --verbose flag if verbose mode is active
         if [ "$VERBOSE_MODE" = "true" ]; then
