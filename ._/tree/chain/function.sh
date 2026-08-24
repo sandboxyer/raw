@@ -107,8 +107,38 @@ echo ""
 # ----------------------------------------------------------------------
 echo "Step 2: Running Raw.sh to generate function body..."
 
+# Resolve the absolute path to Raw.sh
+RAW_SCRIPT_ABS="$(cd "$(dirname "$RAW_SCRIPT")" && pwd)/$(basename "$RAW_SCRIPT")"
+
+# Check if we're in a private copy (look for .rawjs_private marker)
+if [ -f "$RAW_SCRIPT_ABS/.rawjs_private" ] || [ -n "$RAWJS_PRIVATE_MODE" ]; then
+    # We're in a private copy - need to find the original Raw.sh
+    # The original is at the root of the rawjs-runtime directory
+    ORIGINAL_RAW=""
+    
+    # Walk up the directory tree looking for the original Raw.sh
+    CURRENT_DIR="$RAW_SCRIPT_ABS"
+    while [ "$CURRENT_DIR" != "/" ]; do
+        CURRENT_DIR=$(dirname "$CURRENT_DIR")
+        if [ -f "$CURRENT_DIR/Raw.sh" ] && [ ! -f "$CURRENT_DIR/.rawjs_private" ]; then
+            ORIGINAL_RAW="$CURRENT_DIR/Raw.sh"
+            break
+        fi
+    done
+    
+    if [ -n "$ORIGINAL_RAW" ]; then
+        RAW_SCRIPT_ABS="$ORIGINAL_RAW"
+    fi
+fi
+
 # Run Raw.sh with the run_output file
-bash "$RAW_SCRIPT" --tmp --asm "$RUN_OUTPUT_FILE"
+# The --tmp flag must come FIRST before any other flags
+# Use env -i to clear RAWJS_PRIVATE_MODE if it's set
+if [ -n "$RAWJS_PRIVATE_MODE" ]; then
+    env -u RAWJS_PRIVATE_MODE -u RAWJS_PRIVATE_ROOT bash "$RAW_SCRIPT_ABS" --tmp --asm "$RUN_OUTPUT_FILE"
+else
+    bash "$RAW_SCRIPT_ABS" --tmp --asm "$RUN_OUTPUT_FILE"
+fi
 
 # Wait for build_output.asm to be created
 MAX_WAIT=30
