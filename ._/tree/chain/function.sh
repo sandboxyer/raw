@@ -14,6 +14,8 @@ LOCAL_FILE="./build_output.asm"
 # Parent build_output.asm (where function will be appended)
 PARENT_FILE="../../build_output.asm"
 INPUT_FILE="arch_output"
+RUN_OUTPUT_FILE="run_output"
+RAW_SCRIPT="../../../Raw.sh"
 WITH_CALL=0
 
 # Parse command line arguments
@@ -30,15 +32,110 @@ if [ ! -f "$INPUT_FILE" ]; then
     exit 1
 fi
 
-if [ ! -f "$LOCAL_FILE" ]; then
-    echo "Error: $LOCAL_FILE not found"
-    exit 1
-fi
-
 if [ ! -f "$PARENT_FILE" ]; then
     echo "Error: $PARENT_FILE not found"
     exit 1
 fi
+
+if [ ! -f "$RAW_SCRIPT" ]; then
+    echo "Error: $RAW_SCRIPT not found"
+    exit 1
+fi
+
+# ----------------------------------------------------------------------
+# STEP 1: Create run_output by removing main chain tags and function definition
+# ----------------------------------------------------------------------
+echo "Step 1: Creating run_output from arch_output..."
+
+# Remove the outermost <chain-start> and <chain-end> tags
+# Also remove the function definition line
+# Keep inner content intact (including nested chains)
+awk '
+BEGIN { chain_depth = 0; skip_line = 0 }
+{
+    line = $0
+    
+    # Check for chain-start
+    if (line ~ /<chain-start>/) {
+        if (chain_depth == 0) {
+            # Remove outer chain-start
+            line = ""
+            skip_line = 1
+        }
+        chain_depth++
+    }
+    
+    # Check for chain-end
+    if (line ~ /<chain-end>/) {
+        chain_depth--
+        if (chain_depth == 0) {
+            # Remove outer chain-end
+            line = ""
+            skip_line = 1
+        }
+    }
+    
+    # Remove function definition line
+    if (line ~ /^[[:space:]]*function[[:space:]]*[^(]*\([^)]*\)/) {
+        line = ""
+        skip_line = 1
+    }
+    
+    # Print line if not skipped
+    if (!skip_line) {
+        print line
+    }
+    
+    # Reset skip flag
+    skip_line = 0
+}
+' "$INPUT_FILE" > "$RUN_OUTPUT_FILE"
+
+# Verify run_output was created and is not empty
+if [ ! -s "$RUN_OUTPUT_FILE" ]; then
+    echo "Error: Failed to create run_output"
+    exit 1
+fi
+
+echo "✓ run_output created successfully"
+echo "Content of run_output:"
+cat "$RUN_OUTPUT_FILE"
+echo ""
+
+# ----------------------------------------------------------------------
+# STEP 2: Run Raw.sh to generate function body
+# ----------------------------------------------------------------------
+echo "Step 2: Running Raw.sh to generate function body..."
+
+# Run Raw.sh with the run_output file
+bash "$RAW_SCRIPT" --tmp --asm "$RUN_OUTPUT_FILE"
+
+# Wait for build_output.asm to be created
+MAX_WAIT=30
+WAIT_COUNT=0
+while [ ! -f "$LOCAL_FILE" ]; do
+    if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+        echo "Error: Timeout waiting for build_output.asm to be created"
+        exit 1
+    fi
+    echo "Waiting for build_output.asm to be created... ($WAIT_COUNT/$MAX_WAIT)"
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+# Verify build_output.asm is not empty
+if [ ! -s "$LOCAL_FILE" ]; then
+    echo "Error: build_output.asm is empty"
+    exit 1
+fi
+
+echo "✓ Function body generated successfully"
+echo ""
+
+# ----------------------------------------------------------------------
+# STEP 3: Parse function definition from arch_output
+# ----------------------------------------------------------------------
+echo "Step 3: Parsing function definition..."
 
 # Read arch_output and extract function definition line
 FUNC_LINE=$(grep -o 'function[[:space:]]*[^(]*([^)]*)' "$INPUT_FILE" | head -1)
@@ -100,6 +197,15 @@ for p in "${PARAMS[@]}"; do
     PTYPES+=("$dtype")
 done
 
+echo "✓ Function name: $FUNC_NAME"
+echo "✓ Parameters: ${#PNAMES[@]}"
+echo ""
+
+# ----------------------------------------------------------------------
+# STEP 4: Generate parameter data and call code
+# ----------------------------------------------------------------------
+echo "Step 4: Generating parameter data..."
+
 # Generate parameter data declarations for .data section
 PARAM_DATA=""
 for i in "${!PNAMES[@]}"; do
@@ -157,6 +263,11 @@ if [ $WITH_CALL -eq 1 ]; then
     done
     CALL_CODE+="    call ${FUNC_NAME}"$'\n'
 fi
+
+# ----------------------------------------------------------------------
+# STEP 5: Extract data and function body from generated build_output.asm
+# ----------------------------------------------------------------------
+echo "Step 5: Extracting function body..."
 
 # Extract data section from local build_output.asm (variables specific to this function)
 LOCAL_DATA=""
@@ -220,6 +331,14 @@ FUNCTION_CODE+="${FUNCTION_BODY}"
 
 # Combine parameter data and local data for insertion
 ALL_DATA="${LOCAL_DATA}${PARAM_DATA}"
+
+echo "✓ Function body extracted"
+echo ""
+
+# ----------------------------------------------------------------------
+# STEP 6: Append function to parent build_output.asm
+# ----------------------------------------------------------------------
+echo "Step 6: Appending function to parent build_output.asm..."
 
 # Create temporary file for parent build_output.asm
 TEMP_FILE=$(mktemp)
@@ -287,8 +406,10 @@ END {
 
 mv "$TEMP_FILE" "$PARENT_FILE"
 
-echo "Successfully created function '$FUNC_NAME'"
+echo "✓ Function '$FUNC_NAME' successfully created"
 if [ $WITH_CALL -eq 1 ]; then
-    echo "Added test call in _start"
+    echo "✓ Added test call in _start"
 fi
+echo ""
+echo "All steps completed successfully!"
 exit 0
