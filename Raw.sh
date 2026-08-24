@@ -2716,7 +2716,6 @@ display_compact_tool_list() {
         fi
     done <<< "$group_tools_map"
 
-    echo ""
     echo -e "\033[0;90mUse --tools for detailed view\033[0m"
     echo -e "\033[1;33mUsage: --<tool> [args]\033[0m"
 }
@@ -2724,8 +2723,7 @@ display_compact_tool_list() {
 # Function: Display the default minimalist screen (no arguments)
 # Shows a compact example and the complete categorized tool list.
 display_default_screen() {
-    echo ""
-    echo -e "\033[1;36mraw file.js\033[0m"
+    echo -e "\033[1;32m> raw file.js\033[0m"
     echo ""
     display_compact_tool_list
 }
