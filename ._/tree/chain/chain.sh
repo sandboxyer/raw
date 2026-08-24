@@ -46,7 +46,7 @@ if [[ "$FIRST_LINE" =~ ^function[[:space:]] ]]; then
         bash ./function.sh "$@"
     elif [ -f "./function" ]; then
         echo "Executing function handler (binary)..."
-        ./func "$@"
+        ./function "$@"
     else
         echo "Error: Function handler not found (function.sh or function)"
         exit 1
