@@ -166,9 +166,44 @@ fi
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Check if we're running from within a /dev directory structure
-if [[ "$SCRIPT_DIR" == */dev/* ]] || [[ "$SCRIPT_DIR" == */dev ]]; then
-    # Go back to one level before /dev
+# ------------------------------------------------------------------
+# Determine the repository root and cache directory.
+# This handles the case where the script is run from a terminal pool
+# instance (e.g. inside .terminals) and must use the global cache.
+# ------------------------------------------------------------------
+if [[ "$SCRIPT_DIR" == */.terminals/* ]] || [[ "$SCRIPT_DIR" == */.terminals ]]; then
+    # We are inside a .terminals directory; the main repo root is outside it.
+    # Extract the base directory (the parent of .terminals).
+    if [[ "$SCRIPT_DIR" == */.terminals/* ]]; then
+        base_path="${SCRIPT_DIR%%/.terminals/*}"
+    else
+        base_path="${SCRIPT_DIR%/.terminals}"
+    fi
+    
+    REPO_ROOT=""
+    if [[ -n "$base_path" ]] && [[ -d "$base_path" ]]; then
+        # Search for a directory that contains both runtest.sh and .test_cache,
+        # but skip any path under .terminals to avoid picking the terminal pool copy.
+        while IFS= read -r dir; do
+            if [[ -f "${dir}/runtest.sh" ]] && [[ -d "${dir}/.test_cache" ]]; then
+                REPO_ROOT="$dir"
+                break
+            fi
+        done < <(find "$base_path" -path '*/.terminals/*' -prune -o -type d -name '._' -print 2>/dev/null | sort)
+        
+        # If not found in ._ directories, check the base directory itself.
+        if [[ -z "$REPO_ROOT" ]] && [[ -f "${base_path}/runtest.sh" ]] && [[ -d "${base_path}/.test_cache" ]]; then
+            REPO_ROOT="$base_path"
+        fi
+    fi
+    
+    if [[ -n "$REPO_ROOT" ]]; then
+        CACHE_DIR="${REPO_ROOT}/.test_cache"
+    else
+        CACHE_DIR="${SCRIPT_DIR}/.test_cache"
+    fi
+elif [[ "$SCRIPT_DIR" == */dev/* ]] || [[ "$SCRIPT_DIR" == */dev ]]; then
+    # Legacy handling for /dev directory structure (kept for backward compatibility)
     DEV_PARENT="$SCRIPT_DIR"
     while [[ "$DEV_PARENT" != "/" ]]; do
         if [[ "$(basename "$DEV_PARENT")" == "dev" ]]; then
@@ -178,10 +213,8 @@ if [[ "$SCRIPT_DIR" == */dev/* ]] || [[ "$SCRIPT_DIR" == */dev ]]; then
         DEV_PARENT="$(dirname "$DEV_PARENT")"
     done
     
-    # From DEV_PARENT, search through ._/ directories to find runtest.sh
     REPO_ROOT=""
     if [[ -n "$DEV_PARENT" ]] && [[ "$DEV_PARENT" != "/" ]]; then
-        # Search for runtest.sh in nested ._ directories
         while IFS= read -r dir; do
             if [[ -f "${dir}/runtest.sh" ]] && [[ -d "${dir}/.test_cache" ]]; then
                 REPO_ROOT="$dir"
@@ -189,13 +222,11 @@ if [[ "$SCRIPT_DIR" == */dev/* ]] || [[ "$SCRIPT_DIR" == */dev ]]; then
             fi
         done < <(find "$DEV_PARENT" -type d -name "._" 2>/dev/null | sort)
         
-        # If not found in ._ directories, check DEV_PARENT itself
         if [[ -z "$REPO_ROOT" ]] && [[ -f "${DEV_PARENT}/runtest.sh" ]] && [[ -d "${DEV_PARENT}/.test_cache" ]]; then
             REPO_ROOT="$DEV_PARENT"
         fi
     fi
     
-    # If found, use that directory for cache
     if [[ -n "$REPO_ROOT" ]]; then
         CACHE_DIR="${REPO_ROOT}/.test_cache"
     else
