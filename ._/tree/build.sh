@@ -780,7 +780,15 @@ handle_js_content() {
     local input_file="${JS_DIR}call_input"
     local base_file="${JS_DIR}call"
    
-    if create_temp_file "$input_file" "$content"; then
+    # Ensure the content is a valid function call with arguments
+    local call_content="$content"
+    
+    # If content doesn't end with ')', add it to make a valid function call
+    if [[ ! "$call_content" =~ \)$ ]]; then
+        call_content="${call_content})"
+    fi
+    
+    if create_temp_file "$input_file" "$call_content"; then
         local file_type
         file_type=$(check_executable_exists "$base_file")
        
@@ -832,8 +840,14 @@ handle_chain_block() {
     # Create chain input file with _input suffix
     local input_file="${CHAIN_DIR}chain_input"
     local base_file="${CHAIN_DIR}chain"
+    local arch_output_file="${CHAIN_DIR}arch_output"
    
     if create_temp_file "$input_file" "$content"; then
+        # Also create arch_output with the chain content for downstream processing
+        if create_temp_file "$arch_output_file" "$content"; then
+            log_verbose "Chain content also written to arch_output for downstream processing"
+        fi
+        
         local file_type
         file_type=$(check_executable_exists "$base_file")
        
