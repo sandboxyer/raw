@@ -1,6 +1,6 @@
 #!/bin/bash
-# func.sh – Converts current build_output.asm into a named function
-# Usage: ./func.sh [--call]
+# function.sh – Converts current build_output.asm into a named function
+# Usage: ./function.sh [--call]
 # Reads function definition from arch_output file.
 # Appends the function to the parent build_output.asm
 
@@ -300,8 +300,10 @@ fi
 echo "Step 5: Extracting function body..."
 
 # Extract data section from local build_output.asm (variables specific to this function)
+# But ONLY extract NEW data that was added, not the template data
 LOCAL_DATA=""
 IN_DATA=0
+
 while IFS= read -r line; do
     if [[ "$line" == "section .data" ]]; then
         IN_DATA=1
@@ -312,16 +314,17 @@ while IFS= read -r line; do
     fi
     
     if [ $IN_DATA -eq 1 ]; then
-        # Skip common utility strings and constants that are already in parent
-        if [[ "$line" =~ ^[[:space:]]*(COLOR_|TYPE_|true_str|false_str|null_str|undefined_str|hex_prefix|float_scale|float_ten|space|newline) ]]; then
+        # Skip template lines using grep
+        if echo "$line" | grep -qE '^[[:space:]]*(;|COLOR_|TYPE_|true_str|false_str|null_str|undefined_str|hex_prefix|float_scale|float_ten|space|newline|$)'; then
             continue
         fi
-        # Keep function-specific data (like log strings)
+        
+        # Keep only actual data (like log_* strings, variables, etc.)
         LOCAL_DATA+="$line"$'\n'
     fi
 done < "$LOCAL_FILE"
 
-# Extract the function body from local build_output.asm
+# Extract the function body - only the actual code, not the template
 FUNCTION_BODY=""
 IN_FUNCTION=0
 CAPTURE=0
@@ -335,32 +338,38 @@ while IFS= read -r line; do
     fi
     
     # If we're in the function and hit the exit syscall, stop capturing
-    if [ $IN_FUNCTION -eq 1 ] && [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60$ ]]; then
-        # Add ret before the exit
-        FUNCTION_BODY+="    ret"$'\n'
+    if [ $IN_FUNCTION -eq 1 ] && echo "$line" | grep -qE '^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60$'; then
         CAPTURE=0
         IN_FUNCTION=0
         continue
     fi
     
     # Skip the exit syscall lines
-    if [ $IN_FUNCTION -eq 0 ] && [[ "$line" =~ ^[[:space:]]*(xor|syscall) ]]; then
+    if [ $IN_FUNCTION -eq 0 ] && echo "$line" | grep -qE '^[[:space:]]*(xor|syscall)'; then
         continue
     fi
     
     # Capture the function body
     if [ $CAPTURE -eq 1 ]; then
+        # Skip template comments using grep
+        if echo "$line" | grep -qE '^[[:space:]]*;.*(Your code here|Example usage|mov rax, 42|mov rdx, TYPE_NUMBER|call print|mov rax, newline|mov rdx, TYPE_STRING)'; then
+            continue
+        fi
+        
         FUNCTION_BODY+="$line"$'\n'
     fi
 done < "$LOCAL_FILE"
 
+# Clean up the function body - remove leading/trailing empty lines
+FUNCTION_BODY=$(echo "$FUNCTION_BODY" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/N;/^\n$/D')
+
 # Prepare the function code to append to parent
-FUNCTION_CODE=""
-FUNCTION_CODE+="${FUNC_NAME}:"$'\n'
-FUNCTION_CODE+="${FUNCTION_BODY}"
+FUNCTION_CODE="${FUNC_NAME}:"$'\n'
+FUNCTION_CODE+="${FUNCTION_BODY}"$'\n'
+FUNCTION_CODE+="    ret"$'\n'  # Ensure there's always a ret at the end
 
 # Combine parameter data and local data for insertion
-ALL_DATA="${LOCAL_DATA}${PARAM_DATA}"
+ALL_DATA="${PARAM_DATA}${LOCAL_DATA}"
 
 echo "✓ Function body extracted"
 echo ""

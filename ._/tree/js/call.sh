@@ -14,8 +14,17 @@ if [ ! -f "$INPUT_FILE" ]; then
     exit 1
 fi
 
+# Read and clean the call statement
 CALL_STMT=$(cat "$INPUT_FILE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-CALL_STMT="${CALL_STMT%;}"
+
+# Remove ALL trailing semicolons and any extra characters after them
+CALL_STMT=$(echo "$CALL_STMT" | sed 's/;.*$//')
+
+# Remove any trailing ')' that might be duplicated
+CALL_STMT=$(echo "$CALL_STMT" | sed 's/))$/)/')
+
+# Debug output to stderr
+echo "Debug - Cleaned call statement: '$CALL_STMT'" >&2
 
 # Extract function name and arguments
 if [[ "$CALL_STMT" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*\((.*)\)$ ]]; then
@@ -25,6 +34,8 @@ else
     echo "Error: Invalid function call format: $CALL_STMT"
     exit 1
 fi
+
+echo "Debug - Function: $FUNC_NAME, Args: '$ARGS'" >&2
 
 # Generate unique ID for this call
 CALL_ID="call_$(date +%s%N 2>/dev/null || date +%s)_$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ' || echo $$)"
