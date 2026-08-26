@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # log.sh - Parses console.log() statements and generates assembly print calls
-# ALL type checking happens at ASSEMBLY RUNTIME
+# FIXED: Simplified variable printing (no complex runtime type checks)
+# FIXED: Proper UTF-8 support using hexdump
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -24,40 +25,53 @@ else
     exit 1
 fi
 
-# Use /dev/urandom for unique ID (works on Alpine, no md5sum dependency)
 LOG_ID="log_$(date +%s%N 2>/dev/null || date +%s)_$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ' || echo $$)"
 
 # ----------------------------------------------------------------------
-# Escape string for NASM
+# Escape string for NASM with proper UTF-8 support
 # ----------------------------------------------------------------------
 escape_string() {
     local str="$1"
-    local result=""
-    local i=0
     
+    if [ -z "$str" ]; then
+        echo "0"
+        return
+    fi
+    
+    # Handle escape sequences first
+    local processed=""
+    local i=0
     while [ $i -lt ${#str} ]; do
         local c="${str:$i:1}"
         if [ "$c" = '\' ] && [ $((i+1)) -lt ${#str} ]; then
             local n="${str:$((i+1)):1}"
             case "$n" in
-                n)  result="${result}10, "; i=$((i+1)) ;;
-                t)  result="${result}9, ";  i=$((i+1)) ;;
-                r)  result="${result}13, "; i=$((i+1)) ;;
-                \\) result="${result}92, "; i=$((i+1)) ;;
-                \") result="${result}34, "; i=$((i+1)) ;;
-                *)  result="${result}$(printf '%d' "'$c"), " ;;
+                n)  processed+=$'\n'; i=$((i+2)); continue ;;
+                t)  processed+=$'\t'; i=$((i+2)); continue ;;
+                r)  processed+=$'\r'; i=$((i+2)); continue ;;
+                \\) processed+='\\'; i=$((i+2)); continue ;;
+                \") processed+='"'; i=$((i+2)); continue ;;
+                \') processed+="'"; i=$((i+2)); continue ;;
             esac
-        else
-            result="${result}$(printf '%d' "'$c"), "
         fi
+        processed+="$c"
         i=$((i+1))
     done
     
-    echo "${result}0"
+    # Use hexdump to get exact byte values
+    local bytes=$(printf "%s" "$processed" | hexdump -v -e '1/1 "%d, "')
+    
+    bytes="${bytes%, }"
+    
+    if [ -n "$bytes" ]; then
+        echo "${bytes}, 0"
+    else
+        echo "0"
+    fi
 }
 
 # ----------------------------------------------------------------------
-# Parse arguments (handles quoted strings with commas)
+# Parse arguments
 # ----------------------------------------------------------------------
 parse_args() {
     local args=()
@@ -115,14 +129,13 @@ generate_strings() {
 }
 
 # ----------------------------------------------------------------------
-# Generate print code for one argument
-# ALL TYPE DETERMINATION HAPPENS AT ASSEMBLY RUNTIME
+# Generate print code - SIMPLIFIED (original working approach)
 # ----------------------------------------------------------------------
 gen_print() {
     local arg="$1"
     local idx="$2"
     
-    # Handle literals (types are known at generation time - these ARE literals)
+    # Handle literals
     case "$arg" in
         true)
             echo "    mov rax, 1"
@@ -174,22 +187,12 @@ gen_print() {
         return
     fi
     
-    # For VARIABLES - CRITICAL FIX: 
-# - Numbers/Booleans: dereference [var] to get the value
-# - Strings: use var (the address of the string data)
-# - Floats: dereference [var] to get the pointer to the string buffer
-# The type tag tells us which at runtime
-echo "    ; Print variable '${arg}' - runtime type check"
-echo "    mov rdx, [${arg}_type]       ; Read the runtime type tag"
-echo "    cmp rdx, TYPE_STRING         ; Is it a string? (data is at var address)"
-echo "    je .${LOG_ID}_${idx}_as_string"
-echo "    ; Number, boolean, null, undefined, FLOAT - dereference the value"
-echo "    mov rax, [${arg}]"
-echo "    jmp .${LOG_ID}_${idx}_do_print"
-echo ".${LOG_ID}_${idx}_as_string:"
-echo "    mov rax, ${arg}              ; Load ADDRESS of string data"
-echo ".${LOG_ID}_${idx}_do_print:"
-echo "    call print"
+    # For VARIABLES - SIMPLE ORIGINAL APPROACH
+    # [var] contains pointer for strings/floats, value for numbers
+    echo "    ; Print variable '${arg}'"
+    echo "    mov rax, [${arg}]            ; Load value or pointer"
+    echo "    mov rdx, [${arg}_type]       ; Load type"
+    echo "    call print"
 }
 
 # ----------------------------------------------------------------------
@@ -220,7 +223,7 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# Insert into file - FIND THE ONE AND ONLY "mov rax, 60" in _start
+# Insert into file
 # ----------------------------------------------------------------------
 TEMP_FILE=$(mktemp)
 IN_DATA=0
@@ -229,7 +232,6 @@ DATA_DONE=0
 CODE_DONE=0
 
 while IFS= read -r line; do
-    # Track which section we're in
     if [[ "$line" == "section .data" ]]; then
         IN_DATA=1
     elif [[ "$line" == section* ]] && [ "$IN_DATA" -eq 1 ]; then
@@ -240,12 +242,10 @@ while IFS= read -r line; do
         IN_DATA=0
     fi
     
-    # Track when we enter _start
     if [[ "$line" == "_start:" ]]; then
         IN_START=1
     fi
     
-    # Only insert ONCE - before the FIRST mov rax, 60 AFTER _start
     if [ "$IN_START" -eq 1 ] && [ "$CODE_DONE" -eq 0 ] && \
        [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60$ ]]; then
         echo "$PRINT_CODE" >> "$TEMP_FILE"

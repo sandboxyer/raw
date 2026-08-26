@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # string.sh - String declarations and reassignments
-# Supports REASSIGNMENT mode with fixed 256-byte buffer.
+# FIXED: Uses dynamic memory allocation via allocate_string
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 cd "$SCRIPT_DIR/simple"
@@ -32,47 +32,42 @@ fi
 
 VAR_VALUE=$(echo "$VAR_VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-# Function to escape strings for NASM
 escape_for_nasm() {
     local str="$1"
     if [ -z "$str" ]; then
         echo "0"
         return
     fi
-    local result=""
+    
+    local processed=""
     local i=0
-    local len=${#str}
-    while [ $i -lt $len ]; do
-        local char="${str:$i:1}"
-        local char_code=$(printf "%d" "'$char")
-        if [ "$char" = "\\" ] && [ $((i+1)) -lt $len ]; then
-            local next_char="${str:$((i+1)):1}"
-            case "$next_char" in
-                n)  result="${result}10, " ;;
-                t)  result="${result}9, " ;;
-                r)  result="${result}13, " ;;
-                \\\\) result="${result}92, " ;;
-                \") result="${result}34, " ;;
-                \') result="${result}39, " ;;
-                *)  result="${result}92, ${next_char}, " ;;
+    while [ $i -lt ${#str} ]; do
+        local c="${str:$i:1}"
+        if [ "$c" = '\' ] && [ $((i+1)) -lt ${#str} ]; then
+            local n="${str:$((i+1)):1}"
+            case "$n" in
+                n)  processed+=$'\n'; i=$((i+2)); continue ;;
+                t)  processed+=$'\t'; i=$((i+2)); continue ;;
+                r)  processed+=$'\r'; i=$((i+2)); continue ;;
+                \\) processed+='\\'; i=$((i+2)); continue ;;
+                \") processed+='"'; i=$((i+2)); continue ;;
+                \') processed+="'"; i=$((i+2)); continue ;;
             esac
-            i=$((i+2))
-        else
-            if [ $char_code -lt 128 ]; then
-                result="${result}${char_code}, "
-            fi
-            i=$((i+1))
         fi
+        processed+="$c"
+        i=$((i+1))
     done
-    result="${result%, }"
-    if [ -n "$result" ]; then
-        echo "${result}, 0"
+    
+    local bytes=$(printf "%s" "$processed" | hexdump -v -e '1/1 "%d, "')
+    bytes="${bytes%, }"
+    
+    if [ -n "$bytes" ]; then
+        echo "${bytes}, 0"
     else
         echo "0"
     fi
 }
 
-# Function to extract string content
 extract_string_content() {
     local value="$1"
     value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -106,81 +101,121 @@ extract_string_content() {
 STRING_CONTENT=$(extract_string_content "$VAR_VALUE")
 ESCAPED_STRING=$(escape_for_nasm "$STRING_CONTENT")
 
+UNIQUE_ID="str_$(date +%s%N 2>/dev/null || date +%s)_$$"
+
 if [[ "$REASSIGNMENT" == "true" ]]; then
-    STR_LEN=${#STRING_CONTENT}
-    if [ $STR_LEN -gt 255 ]; then
-        echo "Error: String too long for reassignment (max 255)"
-        exit 1
-    fi
-
-    CODE_SECTION="    ; Reassign string variable: $VAR_NAME = \"$STRING_CONTENT\""$'\n'
-    CODE_SECTION+="    ; Copy new string into existing buffer (length ${STR_LEN})"$'\n'
-    CODE_SECTION+="    mov rdi, ${VAR_NAME}"$'\n'
-
-    for (( idx=0; idx<STR_LEN; idx++ )); do
-        char_code=$(printf "%d" "'${STRING_CONTENT:$idx:1}")
-        CODE_SECTION+="    mov byte [rdi + $idx], $char_code"$'\n'
-    done
-    CODE_SECTION+="    mov byte [rdi + $STR_LEN], 0"$'\n'
+    CODE_SECTION="    ; Reassign string variable: $VAR_NAME"$'\n'
+    CODE_SECTION+="    mov rsi, ${UNIQUE_ID}_new_str"$'\n'
+    CODE_SECTION+="    call allocate_string"$'\n'
+    CODE_SECTION+="    mov [${VAR_NAME}], rax"$'\n'
     CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_STRING"$'\n'
     CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
 
+    DATA_SECTION="    ${UNIQUE_ID}_new_str db $ESCAPED_STRING"$'\n'
+
     TEMP_FILE=$(mktemp)
+    IN_DATA=0
     IN_START=0
+    DATA_DONE=0
     CODE_DONE=0
+    
     while IFS= read -r line; do
+        if [[ "$line" == "section .data" ]]; then
+            IN_DATA=1
+        elif [[ "$line" == section* ]] && [ "$IN_DATA" -eq 1 ]; then
+            if [ "$DATA_DONE" -eq 0 ] && [ -n "$DATA_SECTION" ]; then
+                echo "$DATA_SECTION" >> "$TEMP_FILE"
+                DATA_DONE=1
+            fi
+            IN_DATA=0
+        fi
+        
         if [[ "$line" == "_start:" ]]; then
             IN_START=1
         fi
+        
         if [ "$IN_START" -eq 1 ] && [ "$CODE_DONE" -eq 0 ] && \
            [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60 ]] && \
            [ -n "$CODE_SECTION" ]; then
             echo "$CODE_SECTION" >> "$TEMP_FILE"
             CODE_DONE=1
         fi
+        
         echo "$line" >> "$TEMP_FILE"
     done < "$OUTPUT_FILE"
+    
+    if [ "$IN_DATA" -eq 1 ] && [ "$DATA_DONE" -eq 0 ] && [ -n "$DATA_SECTION" ]; then
+        echo "$DATA_SECTION" >> "$TEMP_FILE"
+    fi
+    
     if [ "$CODE_DONE" -eq 0 ] && [ -n "$CODE_SECTION" ]; then
         echo "$CODE_SECTION" >> "$TEMP_FILE"
     fi
+    
     mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-    echo "✓ Successfully reassigned string variable: $VAR_NAME = \"$STRING_CONTENT\""
+    echo "✓ Successfully reassigned string variable: $VAR_NAME"
     exit 0
 fi
 
-# Initial declaration with fixed 256-byte buffer
+# Initial declaration
 ASSEMBLY_DATA="    ; ========================================="$'\n'
-ASSEMBLY_DATA+="    ; Variable: $VAR_NAME = \"$STRING_CONTENT\""$'\n'
+ASSEMBLY_DATA+="    ; Variable: $VAR_NAME"$'\n'
 ASSEMBLY_DATA+="    ; Type: STRING"$'\n'
 ASSEMBLY_DATA+="    ; ========================================="$'\n'
 ASSEMBLY_DATA+="    ${VAR_NAME}_defined_flag db 1"$'\n'
-ASSEMBLY_DATA+="    ${VAR_NAME} db $ESCAPED_STRING"$'\n'
-ASSEMBLY_DATA+="    times (256 - (\$ - ${VAR_NAME})) db 0"$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME}_static_str db $ESCAPED_STRING"$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME} dq ${VAR_NAME}_static_str"$'\n'
 ASSEMBLY_DATA+="    ${VAR_NAME}_type dq TYPE_STRING"$'\n'
 
+INIT_CODE="    ; Initialize string variable: $VAR_NAME"$'\n'
+INIT_CODE+="    mov qword [${VAR_NAME}], ${VAR_NAME}_static_str"$'\n'
+INIT_CODE+="    mov qword [${VAR_NAME}_type], TYPE_STRING"$'\n'
+INIT_CODE+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
+
 TEMP_FILE=$(mktemp)
-IN_DATA_SECTION=0
-DATA_INSERTED=0
+IN_DATA=0
+IN_START=0
+DATA_DONE=0
+CODE_DONE=0
+
 while IFS= read -r line; do
     if [[ "$line" == "section .data" ]]; then
-        IN_DATA_SECTION=1
+        IN_DATA=1
         echo "$line" >> "$TEMP_FILE"
         continue
     fi
-    if [[ "$IN_DATA_SECTION" -eq 1 ]] && [[ "$line" == section* ]]; then
-        if [ "$DATA_INSERTED" -eq 0 ]; then
+    
+    if [[ "$IN_DATA" -eq 1 ]] && [[ "$line" == section* ]]; then
+        if [ "$DATA_DONE" -eq 0 ]; then
             echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
-            DATA_INSERTED=1
+            DATA_DONE=1
         fi
-        IN_DATA_SECTION=0
+        IN_DATA=0
     fi
+    
+    if [[ "$line" == "_start:" ]]; then
+        IN_START=1
+    fi
+    
+    if [ "$IN_START" -eq 1 ] && [ "$CODE_DONE" -eq 0 ] && \
+       [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60 ]]; then
+        echo "$INIT_CODE" >> "$TEMP_FILE"
+        CODE_DONE=1
+    fi
+    
     echo "$line" >> "$TEMP_FILE"
 done < "$OUTPUT_FILE"
-if [[ "$IN_DATA_SECTION" -eq 1 ]] && [ "$DATA_INSERTED" -eq 0 ]; then
+
+if [[ "$IN_DATA" -eq 1 ]] && [ "$DATA_DONE" -eq 0 ]; then
     echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
 fi
+
+if [ "$CODE_DONE" -eq 0 ]; then
+    echo "$INIT_CODE" >> "$TEMP_FILE"
+fi
+
 mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-echo "✓ Successfully added string variable: $VAR_NAME = \"$STRING_CONTENT\""
+echo "✓ Successfully added string variable: $VAR_NAME"
 exit 0
