@@ -27,19 +27,19 @@ is_simple() {
     arg=$(echo "$arg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     
     # Identifier (covers true, false, null, undefined)
-    if echo "$arg" | grep -qP '^[a-zA-Z_$][a-zA-Z0-9_$]*$'; then
+    if echo "$arg" | grep -qE '^[a-zA-Z_$][a-zA-Z0-9_$]*$'; then
         return 0
     fi
     # Number
-    if echo "$arg" | grep -qP '^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$'; then
+    if echo "$arg" | grep -qE '^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$'; then
         return 0
     fi
     # Single-quoted string
-    if echo "$arg" | grep -qP "^'([^'\\\\]|\\\\.)*'$"; then
+    if echo "$arg" | grep -qE "^'([^'\\]|\\\\.)*'$"; then
         return 0
     fi
     # Double-quoted string
-    if echo "$arg" | grep -qP '^"([^"\\]|\\.)*"$'; then
+    if echo "$arg" | grep -qE '^"([^"\\]|\\.)*"$'; then
         return 0
     fi
     return 1
