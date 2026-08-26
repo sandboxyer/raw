@@ -8,6 +8,7 @@
 #   ./runtest.sh --cached  # Force using saved outputs (no node required)
 #   ./runtest.sh --error   # Enable error logging with verbose mode rerun
 #   ./runtest.sh --errorfull # Enable full error logging (verbose + JS code + ASM output)
+#   ./runtest.sh --startin 50 # Start from 50% of tests (skipping earlier ones)
 #   ./runtest.sh --help    # Show help message
 
 set -e
@@ -87,12 +88,20 @@ OPTIONS:
           - ASM output (Raw.sh --asm) - generated assembly file
         Saves everything to errorlog.txt in the caller's directory.
 
+    --startin <percentage>
+        Start running tests from a given percentage of the total test files.
+        The percentage is an integer between 0 and 100.
+        The starting index is calculated as floor(total * percentage / 100).
+        Example: --startin 50 with 50 total generator scripts will start from the 25th file.
+        Useful for resuming a test run from a certain point.
+
 EXAMPLES:
     ./runtest.sh                  # Normal execution (node or cached)
     ./runtest.sh --save           # Save node outputs for later use
     ./runtest.sh --cached         # Run using only cached outputs
     ./runtest.sh --error          # Log errors with verbose rerun
     ./runtest.sh --errorfull      # Full error diagnostics
+    ./runtest.sh --startin 50     # Skip first 50% of tests
     ./runtest.sh --save --error   # Save node outputs AND log errors
 
 NOTES:
@@ -100,6 +109,7 @@ NOTES:
     - --saveforce and --cached cannot be used together
     - --save and --saveforce cannot be used together
     - --error and --errorfull can be combined with any execution mode
+    - --startin can be combined with any other option
     - If Node.js is not available and no cache exists, the script will error
     - If Node.js is not available but cache exists, it auto-falls back to cached mode
     - Cache files are stored in .test_cache/node_outputs/
@@ -113,39 +123,73 @@ SAVE_MODE=false
 SAVEFORCE_MODE=false
 CACHED_MODE=false
 AUTO_MODE=true
+START_PERCENT=0
 
-for arg in "$@"; do
-    case "$arg" in
+# Parse arguments with shift to properly handle --startin 50
+while [[ $# -gt 0 ]]; do
+    case "$1" in
         --save)
             SAVE_MODE=true
             AUTO_MODE=false
+            shift
             ;;
         --saveforce)
             SAVEFORCE_MODE=true
             AUTO_MODE=false
+            shift
             ;;
         --cached)
             CACHED_MODE=true
             AUTO_MODE=false
+            shift
             ;;
         --error)
             ERROR_MODE=true
+            shift
             ;;
         --errorfull)
             ERROR_FULL_MODE=true
             ERROR_MODE=true  # errorfull implies error mode
+            shift
+            ;;
+        --startin)
+            # Expect next argument to be the percentage
+            if [[ $# -lt 2 ]]; then
+                echo -e "\033[0;31m\033[1mError:\033[0m --startin requires an integer percentage"
+                exit 1
+            fi
+            START_PERCENT="$2"
+            if ! [[ "$START_PERCENT" =~ ^[0-9]+$ ]]; then
+                echo -e "\033[0;31m\033[1mError:\033[0m --startin value must be an integer"
+                exit 1
+            fi
+            shift 2
+            ;;
+        --startin=*)
+            START_PERCENT="${1#*=}"
+            if ! [[ "$START_PERCENT" =~ ^[0-9]+$ ]]; then
+                echo -e "\033[0;31m\033[1mError:\033[0m --startin value must be an integer"
+                exit 1
+            fi
+            shift
             ;;
         --help|-h|-help|--h)
             show_help
             ;;
         *)
-            echo -e "\033[0;31m\033[1mError:\033[0m Unknown argument: $arg"
-            echo "Usage: $0 [--save | --saveforce | --cached] [--error | --errorfull] [--help]"
+            echo -e "\033[0;31m\033[1mError:\033[0m Unknown argument: $1"
+            echo "Usage: $0 [--save | --saveforce | --cached] [--error | --errorfull] [--startin <percent>] [--help]"
             echo "Run '$0 --help' for more information"
             exit 1
             ;;
     esac
 done
+
+# Validate START_PERCENT
+if ! [[ "$START_PERCENT" =~ ^[0-9]+$ ]] || (( START_PERCENT < 0 || START_PERCENT > 100 )); then
+    echo -e "\033[0;31m\033[1mError:\033[0m --startin must be an integer between 0 and 100"
+    exit 1
+fi
 
 # Prevent using both --save and --cached simultaneously
 if [[ "$SAVE_MODE" == true ]] && [[ "$CACHED_MODE" == true ]]; then
@@ -265,6 +309,20 @@ if [[ ! -d "$TESTS_DIR" ]]; then
 fi
 
 # ============================================
+# COMPUTE START INDEX
+# ============================================
+# Count total number of generator .sh files (numeric names) in the entire tests tree
+TOTAL_GENERATORS=$(find "$TESTS_DIR" -type f -name "*.sh" | grep -E '/[0-9]+\.sh$' | wc -l)
+if [[ $TOTAL_GENERATORS -gt 0 ]]; then
+    START_INDEX=$(( TOTAL_GENERATORS * START_PERCENT / 100 ))
+else
+    START_INDEX=0
+fi
+
+# Global test counter (used across recursion)
+TEST_COUNTER=0
+
+# ============================================
 # ERROR LOGGING FUNCTIONS
 # ============================================
 init_error_log() {
@@ -275,6 +333,8 @@ init_error_log() {
         echo "Script Directory: ${SCRIPT_DIR}" >> "$ERROR_LOG"
         echo "Raw.sh Location: ${RAW_SCRIPT}" >> "$ERROR_LOG"
         echo "Error Mode: $([ "$ERROR_FULL_MODE" == true ] && echo 'FULL' || echo 'VERBOSE')" >> "$ERROR_LOG"
+        echo "Start Percentage: ${START_PERCENT}%" >> "$ERROR_LOG"
+        echo "Start Index: ${START_INDEX}" >> "$ERROR_LOG"
         echo "=========================================" >> "$ERROR_LOG"
         echo "" >> "$ERROR_LOG"
         
@@ -685,6 +745,15 @@ process_test_directory() {
             
             # Execute dual.sh for each .js file in order
             for js_file in $js_files; do
+                # Increment global test counter
+                TEST_COUNTER=$((TEST_COUNTER+1))
+                
+                # Check if this test should be skipped due to --startin
+                if (( TEST_COUNTER - 1 < START_INDEX )); then
+                    echo -e "${DIM}Skipping test ${js_file} (before start index ${START_INDEX})${RESET}"
+                    continue
+                fi
+                
                 test_path="${dir_path}/${js_file}"
                 test_num="${js_file%.js}"
                 
@@ -833,6 +902,10 @@ else
     echo -e "${GREEN}${BOLD}Mode: NORMAL${RESET} - Using Node.js for execution"
 fi
 
+if [[ "$START_PERCENT" -gt 0 ]]; then
+    echo -e "${MAGENTA}${BOLD}Start point: ${START_PERCENT}%${RESET} - Skipping first ${START_INDEX} tests"
+fi
+
 if [[ "$ERROR_FULL_MODE" == true ]]; then
     echo -e "${RED}${BOLD}Error Logging: FULL${RESET} - Comprehensive diagnostics will be saved to: $ERROR_LOG"
 elif [[ "$ERROR_MODE" == true ]]; then
@@ -907,7 +980,8 @@ total_tests=$((total_passed + total_failed))
 # Print overall statistics with colors
 echo -e "${MAGENTA}${BOLD}┏━━━ Overall Statistics ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${RESET}"
 echo -e "${BOLD}Total groups with tests:${RESET} ${#group_order[@]}"
-echo -e "${BOLD}Total tests:${RESET} ${total_tests}"
+echo -e "${BOLD}Total tests executed:${RESET} ${total_tests}"
+echo -e "${BOLD}Total tests skipped (due to --startin):${RESET} $((START_INDEX > TEST_COUNTER ? TEST_COUNTER : START_INDEX))"
 echo -e "${GREEN}${BOLD}Total passed:${RESET} ${total_passed}"
 echo -e "${RED}${BOLD}Total failed:${RESET} ${total_failed}"
 
@@ -924,7 +998,7 @@ if [[ $total_tests -gt 0 ]]; then
         echo -e "Success rate: ${RED}${BOLD}${success_rate}%${RESET} (${total_passed}/${total_tests} tests passed)"
     fi
 else
-    echo -e "Success rate: ${YELLOW}${BOLD}N/A${RESET} (no tests found)"
+    echo -e "Success rate: ${YELLOW}${BOLD}N/A${RESET} (no tests executed)"
 fi
 
 # Format and display total execution time
