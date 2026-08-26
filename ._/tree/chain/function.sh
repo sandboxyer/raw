@@ -4,7 +4,7 @@
 # Reads function definition from arch_output file.
 # Appends the function to the parent build_output.asm
 # Enhanced: Proper variable scoping, string handling, and metadata generation
-# FIX: Proper newline handling in data extraction
+# FIX: Generate missing data declarations for local variables
 
 set -e
 
@@ -56,7 +56,7 @@ awk '
 BEGIN { chain_depth = 0; skip_line = 0 }
 {
     line = $0
-    
+   
     # Check for chain-start
     if (line ~ /<chain-start>/) {
         if (chain_depth == 0) {
@@ -66,7 +66,7 @@ BEGIN { chain_depth = 0; skip_line = 0 }
         }
         chain_depth++
     }
-    
+   
     # Check for chain-end
     if (line ~ /<chain-end>/) {
         chain_depth--
@@ -76,18 +76,18 @@ BEGIN { chain_depth = 0; skip_line = 0 }
             skip_line = 1
         }
     }
-    
+   
     # Remove function definition line
     if (line ~ /^[[:space:]]*function[[:space:]]*[^(]*\([^)]*\)/) {
         line = ""
         skip_line = 1
     }
-    
+   
     # Print line if not skipped
     if (!skip_line) {
         print line
     }
-    
+   
     # Reset skip flag
     skip_line = 0
 }
@@ -114,7 +114,7 @@ RAW_SCRIPT_ABS="$(cd "$(dirname "$RAW_SCRIPT")" && pwd)/$(basename "$RAW_SCRIPT"
 if [ -f "$RAW_SCRIPT_ABS/.rawjs_private" ] || [ -n "$RAWJS_PRIVATE_MODE" ]; then
     # We're in a private copy - need to find the original Raw.sh
     ORIGINAL_RAW=""
-    
+   
     # Walk up the directory tree looking for the original Raw.sh
     CURRENT_DIR="$RAW_SCRIPT_ABS"
     while [ "$CURRENT_DIR" != "/" ]; do
@@ -124,7 +124,7 @@ if [ -f "$RAW_SCRIPT_ABS/.rawjs_private" ] || [ -n "$RAWJS_PRIVATE_MODE" ]; then
             break
         fi
     done
-    
+   
     if [ -n "$ORIGINAL_RAW" ]; then
         RAW_SCRIPT_ABS="$ORIGINAL_RAW"
     fi
@@ -191,14 +191,14 @@ for p in "${PARAMS[@]}"; do
     # Trim whitespace
     p=$(echo "$p" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [ -z "$p" ]; then continue; fi
-    
+   
     # Split on '='
     if [[ "$p" == *=* ]]; then
         name="${p%%=*}"
         default="${p#*=}"
         name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         default=$(echo "$default" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
+       
         # Determine type of default
         if [[ "$default" =~ ^\".*\"$ ]]; then
             dtype="string"
@@ -215,7 +215,7 @@ for p in "${PARAMS[@]}"; do
         default=""
         dtype="none"
     fi
-    
+   
     PNAMES+=("$name")
     PDEFAULTS+=("$default")
     PTYPES+=("$dtype")
@@ -261,7 +261,7 @@ for i in "${!PNAMES[@]}"; do
     PARAM_DATA+="    ; Parameter: $name"$'\n'
     PARAM_DATA+="    ${name} dq 0"$'\n'
     PARAM_DATA+="    ${name}_type dq TYPE_UNDEFINED"$'\n'
-    
+   
     if [ "$dtype" == "string" ] && [ -n "${PDEFAULTS[$i]}" ]; then
         strval="${PDEFAULTS[$i]}"
         strval_esc=$(echo "$strval" | sed "s/'/''/g")
@@ -289,15 +289,14 @@ while IFS= read -r line; do
         IN_DATA=0
         break
     fi
-    
+   
     if [ $IN_DATA -eq 1 ]; then
-        # Skip template lines
+        # Skip template lines but KEEP variable declarations
         if echo "$line" | grep -qE '^[[:space:]]*(;|COLOR_|TYPE_|true_str|false_str|null_str|undefined_str|hex_prefix|float_scale|float_ten|space|newline|$)'; then
             continue
         fi
-        
-        # Keep only actual data lines
-        # Ensure each line ends with newline
+       
+        # Keep only actual data lines (including variable declarations)
         LOCAL_DATA+="$line"$'\n'
     fi
 done < "$LOCAL_FILE"
@@ -314,26 +313,26 @@ while IFS= read -r line; do
         CAPTURE=1
         continue
     fi
-    
+   
     # If we're in the function and hit the exit syscall, stop capturing
     if [ $IN_FUNCTION -eq 1 ] && echo "$line" | grep -qE '^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60$'; then
         CAPTURE=0
         IN_FUNCTION=0
         continue
     fi
-    
+   
     # Skip the exit syscall lines
     if [ $IN_FUNCTION -eq 0 ] && echo "$line" | grep -qE '^[[:space:]]*(xor|syscall)'; then
         continue
     fi
-    
+   
     # Capture the function body
     if [ $CAPTURE -eq 1 ]; then
-        # Skip template comments
+        # Skip template comments but keep everything else
         if echo "$line" | grep -qE '^[[:space:]]*;.*(Your code here|Example usage|mov rax, 42|mov rdx, TYPE_NUMBER|call print|mov rax, newline|mov rdx, TYPE_STRING)'; then
             continue
         fi
-        
+       
         FUNCTION_BODY+="$line"$'\n'
     fi
 done < "$LOCAL_FILE"
@@ -342,6 +341,59 @@ done < "$LOCAL_FILE"
 FUNCTION_BODY=$(echo "$FUNCTION_BODY" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
 echo "✓ Function body extracted"
+echo ""
+
+# ----------------------------------------------------------------------
+# STEP 5.4: Generate missing data declarations and copy code
+# ----------------------------------------------------------------------
+echo "Step 5.4: Generating data declarations and copy code for local variables..."
+
+# Generate data declarations and copy code for variable-to-variable assignments
+COPY_CODE=""
+LOCAL_VAR_DATA=""
+
+while IFS= read -r line; do
+    # Look for lines like: <js-start>    var eita=num1;    <js-end>
+    if [[ "$line" =~ \<js-start\>[[:space:]]*(var|let|const)[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*\;?[[:space:]]*\<js-end\> ]]; then
+        dest="${BASH_REMATCH[2]}"
+        src="${BASH_REMATCH[3]}"
+        
+        # Add data declaration for destination variable
+        LOCAL_VAR_DATA+="    ; Local variable: ${dest}"$'\n'
+        LOCAL_VAR_DATA+="    ${dest}_defined_flag db 1"$'\n'
+        LOCAL_VAR_DATA+="    ${dest} dq 0"$'\n'
+        LOCAL_VAR_DATA+="    ${dest}_float_val dq 0"$'\n'
+        LOCAL_VAR_DATA+="    ${dest}_str times 32 db 0"$'\n'
+        LOCAL_VAR_DATA+="    ${dest}_type dq TYPE_NUMBER"$'\n'
+        
+        # Add copy code
+        if [[ "$dest" != "$src" ]]; then
+            COPY_CODE+="    ; Copy variable ${src} to ${dest}"$'\n'
+            COPY_CODE+="    mov rax, [${src}]"$'\n'
+            COPY_CODE+="    mov [${dest}], rax"$'\n'
+            COPY_CODE+="    mov rax, [${src}_type]"$'\n'
+            COPY_CODE+="    mov [${dest}_type], rax"$'\n'
+            COPY_CODE+="    mov byte [${dest}_defined_flag], 1"$'\n'
+        fi
+    fi
+done < "$RUN_OUTPUT_FILE"
+
+# Add generated local variable data to LOCAL_DATA
+if [ -n "$LOCAL_VAR_DATA" ]; then
+    if [ -n "$LOCAL_DATA" ]; then
+        LOCAL_DATA+=$'\n'
+    fi
+    LOCAL_DATA+="$LOCAL_VAR_DATA"
+    echo "✓ Generated data declarations for local variables"
+fi
+
+if [ -n "$COPY_CODE" ]; then
+    # Prepend the copy code to the function body
+    FUNCTION_BODY="${COPY_CODE}"$'\n'"${FUNCTION_BODY}"
+    echo "✓ Added copy code for variable assignments"
+else
+    echo "✓ No simple variable copy assignments detected"
+fi
 echo ""
 
 # ----------------------------------------------------------------------
@@ -359,7 +411,7 @@ for pname in "${PNAMES[@]}"; do
     fi
 done
 
-# Parse the original arch_output to find variables declared INSIDE the function
+# Parse the run_output to find variables declared INSIDE the function
 while IFS= read -r line; do
     if [[ "$line" =~ (var|let|const)[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
         var_name="${BASH_REMATCH[2]}"
@@ -374,14 +426,14 @@ mapfile -t idents < <(printf "%s\n" "${!RENAME_MAP[@]}" | awk '{ print length, $
 apply_renames() {
     local text="$1"
     local result="$text"
-    
+   
     for orig in "${idents[@]}"; do
         if [ -z "$orig" ]; then
             continue
         fi
-        
+       
         local new="${FUNC_NAME}_${orig}"
-        
+       
         result=$(echo "$result" | sed -E "
             s/\[${orig}\]/[${new}]/g
             s/\b${orig}_type\b/${new}_type/g
@@ -391,7 +443,7 @@ apply_renames() {
             s/\b${orig}\b/${new}/g
         ")
     done
-    
+   
     echo "$result"
 }
 
@@ -400,7 +452,7 @@ if [ ${#idents[@]} -gt 0 ]; then
     PARAM_DATA=$(apply_renames "$PARAM_DATA")
     LOCAL_DATA=$(apply_renames "$LOCAL_DATA")
     FUNCTION_BODY=$(apply_renames "$FUNCTION_BODY")
-    
+   
     echo "✓ Renamed ${#idents[@]} local identifiers with prefix '${FUNC_NAME}_'"
 else
     echo "✓ No local identifiers to rename"
@@ -413,7 +465,6 @@ FUNCTION_CODE+="${FUNCTION_BODY}"$'\n'
 FUNCTION_CODE+="    ret"$'\n'
 
 # Combine parameter data and local data for insertion
-# Ensure proper separation with newlines
 ALL_DATA=""
 if [ -n "$PARAM_DATA" ]; then
     ALL_DATA+="$PARAM_DATA"

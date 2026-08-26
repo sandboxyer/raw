@@ -3,6 +3,7 @@
 # number.sh - Converts JavaScript number declarations to NASM assembly code
 # Supports variables in expressions, runtime evaluation, and reassignment.
 # All variables get storage for both integer and float representation.
+# NEW: Handles single variable-to-variable copy without needing the source type.
 
 set -u
 
@@ -82,14 +83,14 @@ tokenize() {
     local i=0
     local len=${#expr}
     local prev_type="START"  # Track previous token type for unary minus detection
-    
+   
     while [ $i -lt $len ]; do
         local c="${expr:$i:1}"
         if [[ "$c" =~ [[:space:]] ]]; then
             i=$((i+1))
             continue
         fi
-        
+       
         # Handle minus sign (could be unary or binary)
         if [[ "$c" == "-" ]]; then
             # Check if this is a unary minus (start of expression, after operator, or after open paren)
@@ -104,7 +105,7 @@ tokenize() {
                         i=$((i+1))
                         local has_dot=false
                         [[ "$nc" == "." ]] && has_dot=true
-                        
+                       
                         while [ $i -lt $len ]; do
                             local digit="${expr:$i:1}"
                             if [[ "$digit" =~ [0-9] ]]; then
@@ -128,7 +129,7 @@ tokenize() {
                                 break
                             fi
                         done
-                        
+                       
                         if [[ "$num" =~ \. ]] || [[ "$num" =~ [eE] ]]; then
                             tokens+=("FLOAT:$num")
                         else
@@ -153,7 +154,7 @@ tokenize() {
             i=$((i+1))
             continue
         fi
-        
+       
         if [[ "$c" =~ [0-9] ]] || [[ "$c" == "." ]]; then
             local num="$c"
             i=$((i+1))
@@ -578,7 +579,39 @@ if [[ "$VAR_VALUE" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
 else
     mapfile -t tokens < <(tokenize "$VAR_VALUE")
 
-    if [ ${#tokens[@]} -eq 1 ]; then
+    # NEW: Handle single variable-to-variable copy without needing type info
+    if [ ${#tokens[@]} -eq 1 ] && [[ "${tokens[0]}" == VAR:* ]]; then
+        source_var="${tokens[0]#VAR:}"
+        if [[ "$MODE" == "declare" ]]; then
+            DATA_SECTION="    ; ========================================="$'\n'
+            DATA_SECTION+="    ; Variable: $VAR_NAME = $source_var (copy)"$'\n'
+            DATA_SECTION+="    ; ========================================="$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_defined_flag db 1"$'\n'
+            DATA_SECTION+="    ${VAR_NAME} dq 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_float_val dq 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_UNDEFINED"$'\n'
+            CODE_SECTION="    ; Copy variable $source_var to $VAR_NAME"$'\n'
+            CODE_SECTION+="    mov rax, [${source_var}]"$'\n'
+            CODE_SECTION+="    mov [${VAR_NAME}], rax"$'\n'
+            CODE_SECTION+="    mov rax, [${source_var}_type]"$'\n'
+            CODE_SECTION+="    mov [${VAR_NAME}_type], rax"$'\n'
+            CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
+        else
+            # Reassignment copy
+            DATA_SECTION=""   # No new data needed
+            CODE_SECTION="    ; Reassign variable $VAR_NAME from $source_var"$'\n'
+            CODE_SECTION+="    mov rax, [${source_var}]"$'\n'
+            CODE_SECTION+="    mov [${VAR_NAME}], rax"$'\n'
+            CODE_SECTION+="    mov rax, [${source_var}_type]"$'\n'
+            CODE_SECTION+="    mov [${VAR_NAME}_type], rax"$'\n'
+            CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
+        fi
+        IS_FLOAT=false  # We don't know; type is copied dynamically
+        # Skip the rest of evaluation
+        FULL_OUTPUT=""
+    elif [ ${#tokens[@]} -eq 1 ]; then
+        # Existing single token handling (literal FLOAT or INT)
         token="${tokens[0]}"
         ttype="${token%%:*}"
         tval="${token#*:}"
@@ -638,22 +671,9 @@ else
                 CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_NUMBER"$'\n'
                 CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
             fi
-        else
-            # Single variable reference (should not happen here, var.sh handles)
-            mapfile -t rpn_tokens < <(to_rpn "${tokens[@]}")
-            if is_float_expression "${tokens[@]}"; then
-                IS_FLOAT=true
-                FULL_OUTPUT=$(generate_full_asm "$MODE" true "${rpn_tokens[@]}")
-            else
-                IS_FLOAT=false
-                FULL_OUTPUT=$(generate_full_asm "$MODE" false "${rpn_tokens[@]}")
-            fi
-            DATA_SECTION=$(echo "$FULL_OUTPUT" | sed -n '1,/DATA_CODE_SEPARATOR/p' | head -n -1)
-            CODE_SECTION=$(echo "$FULL_OUTPUT" | sed -n '/DATA_CODE_SEPARATOR/,$p' | tail -n +2)
         fi
-    fi
-
-    if [ -z "$DATA_SECTION" ] && [ -z "$CODE_SECTION" ]; then
+    else
+        # Multiple tokens: existing RPN evaluation
         mapfile -t rpn_tokens < <(to_rpn "${tokens[@]}")
         if is_float_expression "${tokens[@]}"; then
             IS_FLOAT=true
