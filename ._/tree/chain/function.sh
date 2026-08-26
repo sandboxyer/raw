@@ -3,6 +3,7 @@
 # Usage: ./function.sh [--call]
 # Reads function definition from arch_output file.
 # Appends the function to the parent build_output.asm
+# NEW: Implements proper variable scoping with shadowing support
 
 set -e
 
@@ -363,6 +364,87 @@ done < "$LOCAL_FILE"
 # Clean up the function body - remove leading/trailing empty lines
 FUNCTION_BODY=$(echo "$FUNCTION_BODY" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/N;/^\n$/D')
 
+echo "✓ Function body extracted"
+echo ""
+
+# ----------------------------------------------------------------------
+# STEP 5.5: Apply variable scoping (prefix ONLY locally-declared variables)
+# ----------------------------------------------------------------------
+echo "Step 5.5: Applying variable scoping..."
+
+# Build list of LOCAL variables (declared with var/let/const inside the function)
+declare -A RENAME_MAP
+
+# Add parameter names (they are local to the function)
+for pname in "${PNAMES[@]}"; do
+    if [ -n "$pname" ]; then
+        RENAME_MAP["$pname"]=1
+    fi
+done
+
+# Parse the original arch_output to find variables declared INSIDE the function
+# This is the most reliable way to identify local variables
+while IFS= read -r line; do
+    # Look for var/let/const declarations
+    if [[ "$line" =~ (var|let|const)[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
+        var_name="${BASH_REMATCH[2]}"
+        RENAME_MAP["$var_name"]=1
+        echo "  Found local variable: $var_name"
+    fi
+done < "$RUN_OUTPUT_FILE"
+
+# Build sorted list of identifiers (longest first to avoid partial matches)
+mapfile -t idents < <(printf "%s\n" "${!RENAME_MAP[@]}" | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-)
+
+# Function to apply renames to a string
+# This is a more aggressive renaming that catches all references to local variables
+apply_renames() {
+    local text="$1"
+    local result="$text"
+    
+    for orig in "${idents[@]}"; do
+        if [ -z "$orig" ]; then
+            continue
+        fi
+        
+        local new="${FUNC_NAME}_${orig}"
+        
+        # Use a multi-step approach to handle all cases:
+        # 1. [orig] → [new]
+        # 2. orig_type → new_type
+        # 3. orig_defined_flag → new_defined_flag
+        # 4. orig_float_val → new_float_val
+        # 5. orig_str → new_str
+        # 6. Standalone orig → new
+        
+        result=$(echo "$result" | sed -E "
+            s/\[${orig}\]/[${new}]/g
+            s/\b${orig}_type\b/${new}_type/g
+            s/\b${orig}_defined_flag\b/${new}_defined_flag/g
+            s/\b${orig}_float_val\b/${new}_float_val/g
+            s/\b${orig}_str\b/${new}_str/g
+            s/\b${orig}\b/${new}/g
+        ")
+    done
+    
+    echo "$result"
+}
+
+# Apply renames to all components
+if [ ${#idents[@]} -gt 0 ]; then
+    PARAM_DATA=$(apply_renames "$PARAM_DATA")
+    CALL_CODE=$(apply_renames "$CALL_CODE")
+    LOCAL_DATA=$(apply_renames "$LOCAL_DATA")
+    FUNCTION_BODY=$(apply_renames "$FUNCTION_BODY")
+    
+    echo "✓ Renamed ${#idents[@]} local identifiers with prefix '${FUNC_NAME}_'"
+    echo "  Local identifiers: ${idents[*]}"
+    echo "  (Outer/global variables are NOT renamed and remain accessible)"
+else
+    echo "✓ No local identifiers to rename"
+fi
+echo ""
+
 # Prepare the function code to append to parent
 FUNCTION_CODE="${FUNC_NAME}:"$'\n'
 FUNCTION_CODE+="${FUNCTION_BODY}"$'\n'
@@ -371,7 +453,7 @@ FUNCTION_CODE+="    ret"$'\n'  # Ensure there's always a ret at the end
 # Combine parameter data and local data for insertion
 ALL_DATA="${PARAM_DATA}${LOCAL_DATA}"
 
-echo "✓ Function body extracted"
+echo "✓ Function body with scoped variables prepared"
 echo ""
 
 # ----------------------------------------------------------------------
