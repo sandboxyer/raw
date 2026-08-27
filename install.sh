@@ -28,6 +28,9 @@ BACKUP_DIR="/usr/local/etc/rawjs-runtime_old_$(date +%s)"
 # Include .git directory (default: false)
 INCLUDE_GIT=false
 
+# Force remove and update (default: false)
+FORCE_REMOVE_UPDATE=false
+
 # =============================================================================
 # BUILD SYSTEM VARIABLES (modular addition)
 # =============================================================================
@@ -1686,7 +1689,7 @@ handle_build_arguments() {
     esac
 
     # capture --build optional save name
-    if [ "$prev_arg" = "--build" ] && [ "$arg" != "--build" ] && [ "$arg" != "--tar" ] && [ "$arg" != "--config" ] && [ "$arg" != "--message" ] && [ "$arg" != "--staged" ] && [ "$arg" != "--version" ] && [ "$arg" != "-log" ] && [ "$arg" != "-h" ] && [ "$arg" != "--help" ]; then
+    if [ "$prev_arg" = "--build" ] && [ "$arg" != "--build" ] && [ "$arg" != "--tar" ] && [ "$arg" != "--config" ] && [ "$arg" != "--message" ] && [ "$arg" != "--staged" ] && [ "$arg" != "--version" ] && [ "$arg" != "-log" ] && [ "$arg" != "-h" ] && [ "$arg" != "--help" ] && [ "$arg" != "-ru" ]; then
       BUILD_SAVE_NAME="$arg"
     fi
 
@@ -1738,6 +1741,7 @@ show_help() {
   echo "Options:"
   echo "  -h, --help            Show this help"
   echo "  -log                  Enable installation logging"
+  echo "  -ru                   Force remove existing installation and reinstall (no menu)"
   echo "  --with-git            Include .git directory in installation (default: exclude)"
   echo
   echo "BUILD OPTIONS (similar to EasyAI):"
@@ -1769,6 +1773,11 @@ show_help() {
   echo "  $0 --build --staged         Build from working tree"
   echo "  $0 --build myconfig         Build using saved configuration 'myconfig'"
   echo
+  echo "INSTALL EXAMPLES:"
+  echo "  $0                         Install or prompt for update/remove"
+  echo "  $0 -ru                     Force remove and reinstall without menu"
+  echo "  $0 -ru -log                Force remove and reinstall with logging"
+  echo
   exit 0
 }
 
@@ -1791,6 +1800,7 @@ for arg in "$@"; do
   case "$arg" in
     -h|--help) show_help ;;
     -log) LOG_MODE=true; touch "$LOG_FILE" ;;
+    -ru) FORCE_REMOVE_UPDATE=true ;;
     --with-git) INCLUDE_GIT=true ;;
     *)
       # Check if this argument is a .js file (not a flag)
@@ -1829,7 +1839,11 @@ fi
 IS_FIRST_INSTALL=false
 if [ -d "$INSTALL_DIR" ]; then
   log_message "Existing installation found."
-  if [ -n "$PROVIDED_JS_FILE" ]; then
+  if [ "$FORCE_REMOVE_UPDATE" = true ]; then
+    log_message "Forcing removal and update..."
+    remove_installation
+    IS_FIRST_INSTALL=true
+  elif [ -n "$PROVIDED_JS_FILE" ]; then
     log_message "JS file provided - forcing update..."
     remove_installation
     IS_FIRST_INSTALL=true
@@ -1965,5 +1979,6 @@ else
   if [ "$INSTALL_BASM" = true ]; then echo "  • $BIN_DIR/basm"; fi
   echo
   echo "To uninstall, run this script again and choose option 2."
+  echo "To force reinstall, run: $0 -ru"
   echo "=========================================="
 fi
