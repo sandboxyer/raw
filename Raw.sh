@@ -581,6 +581,8 @@ ASM_ONLY_MODE="false"   # Flag for --asm without JS file
 BIN_OUTPUT_MODE="false" # Flag for --bin output generation with JS processing
 BIN_OUTPUT_NAME=""      # Store the output name for --bin mode
 CLI_MODE="false"        # New flag for --cli
+ERROR_MODE="false"      # New flag for --error/--errorfull
+ERROR_MODE_FULL="false" # Flag for --errorfull (implies verbose mode)
 
 if [ $# -gt 0 ]; then
     if [ "$1" = "--test" ] || [ "$1" = "--reset" ]; then
@@ -648,6 +650,18 @@ if [ $# -gt 0 ]; then
         VERBOSE_MODE="true"
         FORCE_LOG_MODE="true"
         shift  # Remove --verbose flag
+    elif [ "$1" = "--error" ]; then
+        # Error mode: captures output and appends to errorfile.txt
+        ERROR_MODE="true"
+        FORCE_LOG_MODE="true"
+        shift  # Remove --error flag
+    elif [ "$1" = "--errorfull" ]; then
+        # Errorfull mode: like error mode but with verbose output
+        ERROR_MODE="true"
+        ERROR_MODE_FULL="true"
+        VERBOSE_MODE="true"
+        FORCE_LOG_MODE="true"
+        shift  # Remove --errorfull flag
     elif [ "$1" = "--bin" ]; then
         # Check if --bin is being used as a tool command (no JS file follows)
         shift  # Remove --bin flag
@@ -693,7 +707,7 @@ if [ $# -gt 0 ]; then
         fi
     else
         # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
-        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--cli" ] && [ "$1" != "--dev" ]; then
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--cli" ] && [ "$1" != "--dev" ] && [ "$1" != "--error" ] && [ "$1" != "--errorfull" ]; then
             # Extract tool name by removing leading --
             TOOL_COMMAND="${1#--}"
             TOOL_MODE="true"
@@ -1859,6 +1873,8 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --asm [path/to/file.js] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --bin [output_name] <path/to/file.js> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --bin [options] <build_output.asm>${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --error <path/to/file.js> [args...]${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --errorfull <path/to/file.js> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --start${NC}"
 }
 
@@ -2015,8 +2031,7 @@ handle_cli() {
             echo -e "${YELLOW}errorgen detected. Writing full transcript to .rawjs_cli.js and generating logs...${NC}"
 
             # Write the complete transcript (all lines typed) to the file
-            printf "%s
-" "$full_transcript" > "$cli_js_file"
+            printf "%s\n" "$full_transcript" > "$cli_js_file"
 
             local log_file="$CALLER_DIR/.rawjs_cli.log.txt"
             local verbose_file="$CALLER_DIR/.rawjs_cli.verbose.txt"
@@ -2522,8 +2537,7 @@ get_tools_for_group() {
     fi
 
     # Return the array as newline-separated string
-    printf '%s
-' "${group_tools[@]}"
+    printf '%s\n' "${group_tools[@]}"
 }
 
 # Function: Display formatted tool list with groups and colors (full version)
@@ -2616,8 +2630,7 @@ display_tool_list_with_groups() {
                     local working_directory=$(get_tool_working_dir "$tool_name")
 
                     # Display tool with group color
-                    printf "  \033[${group_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m
-" \
+                    printf "  \033[${group_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m\n" \
                         "$tool_name" "$description" "$working_directory"
                 fi
             done <<< "$group_tools_list"
@@ -2654,8 +2667,7 @@ display_tool_list_with_groups() {
                 local working_directory=$(get_tool_working_dir "$tool_name")
 
                 # Display tool with general color
-                printf "  \033[${general_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m
-" \
+                printf "  \033[${general_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m\n" \
                     "$tool_name" "$description" "$working_directory"
             fi
         done <<< "$general_tools_list"
@@ -3272,8 +3284,8 @@ main_flow() {
         # NOW EXECUTE YOUR FILES USING THE JS PATH
         # ============================================
 
-        # Start execution timer if in log mode
-        if [ "$FORCE_LOG_MODE" = "true" ]; then
+        # Start execution timer if in log mode (but NOT in error mode)
+        if [ "$FORCE_LOG_MODE" = "true" ] && [ "$ERROR_MODE" = "false" ]; then
             start_timer
         fi
 
@@ -3286,41 +3298,124 @@ main_flow() {
             arch_output_detected=1
         fi
 
-        if [ "$arch_output_detected" = "1" ]; then
-            # Skip min, polish, arch and use the file directly as arch_output
-            execute_file "silent" "./build"
-            mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm"
-            cp_file "$JS_FILE_PATH" "$WORKING_DIRECTORY/arch_output"
+              # Function to run the complete pipeline (captured or not)
+        run_pipeline() {
+            if [ "$arch_output_detected" = "1" ]; then
+                # Skip min, polish, arch and use the file directly as arch_output
+                execute_file "silent" "./build"
+                mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm"
+                cp_file "$JS_FILE_PATH" "$WORKING_DIRECTORY/arch_output"
+            else
+                # Full pipeline
+                execute_file "silent" "./._/min/min" "$JS_FILE_PATH"
+                execute_file "silent" "./._/min/polish.sh" "$OUTPUT_JS"
+                execute_file "silent" "./build"
+                mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm"
+                execute_file "silent" "./arch" "$OUTPUT_JS"
+                mv_file "arch_output" "$WORKING_DIRECTORY/arch_output"
+                rm_file "$SCRIPT_DIR/output.js"
+            fi
+
+            # Execute tree/build.sh with --verbose flag if verbose mode is active
+            if [ "$VERBOSE_MODE" = "true" ]; then
+                execute_file "silent" "./tree/build.sh" "--verbose"
+            else
+                execute_file "silent" "./tree/build.sh"
+            fi
+
+            # Check if binary output mode is active (--bin flag was used)
+            if [ "$BIN_OUTPUT_MODE" = "true" ]; then
+                local asm_file="$WORKING_DIRECTORY/build_output.asm"
+                generate_binary "$asm_file" "$BIN_OUTPUT_NAME"
+            elif [ "$ASM_MODE" = "true" ]; then
+                copy_asm_to_caller
+            elif [ "$ERROR_MODE" = "false" ]; then
+                # Only execute basm normally if NOT in error mode
+                # In error mode, we'll execute basm separately with proper logging
+                execute_file "log" "./build_output.asm"
+            fi
+        }
+
+               if [ "$ERROR_MODE" = "true" ]; then
+            # ----- ERROR MODE: capture everything and append to errorfile.txt -----
+            local temp_pipeline_output="$CALLER_DIR/.error_pipeline_output.txt"
+            local temp_basm_output="$CALLER_DIR/.error_basm_output.txt"
+            local error_file="$CALLER_DIR/errorfile.txt"
+
+            # Run the complete Raw.sh again with proper flags to capture full output
+            if [ "$ERROR_MODE_FULL" = "true" ]; then
+                # For errorfull: run with --verbose to get maximum output
+                (cd "$CALLER_DIR" && bash "$SCRIPT_DIR/Raw.sh" --verbose "$JS_FILE") > "$temp_pipeline_output" 2>&1
+            else
+                # For error: run with --log to get normal execution output
+                (cd "$CALLER_DIR" && bash "$SCRIPT_DIR/Raw.sh" --log "$JS_FILE") > "$temp_pipeline_output" 2>&1
+            fi
+
+            # The build_output.asm should be in WORKING_DIRECTORY after pipeline
+            local asm_file_path="$WORKING_DIRECTORY/build_output.asm"
+
+            # Also capture basm output separately using the global basm command
+            if [ -f "$asm_file_path" ]; then
+                # Use the global basm command for complete output
+                if command -v basm >/dev/null 2>&1; then
+                    # Execute global basm command
+                    (cd "$CALLER_DIR" && basm "$asm_file_path") > "$temp_basm_output" 2>&1
+                else
+                    echo "Global basm command not found in PATH" > "$temp_basm_output"
+                    # Try to use the local basm script as fallback
+                    local basm_script="$WORKING_DIRECTORY/basm/basm.sh"
+                    if [ -f "$basm_script" ]; then
+                        chmod +x "$basm_script" 2>/dev/null
+                        (cd "$CALLER_DIR" && "$basm_script" "$asm_file_path") > "$temp_basm_output" 2>&1
+                    fi
+                fi
+            else
+                echo "build_output.asm not found at $asm_file_path" > "$temp_basm_output"
+            fi
+
+            # Strip ANSI codes from all captured outputs
+            local clean_pipeline_output=$(strip_ansi_codes "$(cat "$temp_pipeline_output" 2>/dev/null || echo 'Pipeline output capture failed')")
+            local clean_basm_output=$(strip_ansi_codes "$(cat "$temp_basm_output" 2>/dev/null || echo 'Basm output capture failed')")
+            local clean_asm_content=""
+            
+            if [ -f "$asm_file_path" ]; then
+                clean_asm_content=$(cat "$asm_file_path")
+            else
+                clean_asm_content="build_output.asm not found at $asm_file_path"
+            fi
+
+            # Append everything to the error file with a clear separator
+            {
+                echo "========================================="
+                echo "Error run at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+                echo "JS File: $JS_FILE_PATH"
+                echo "Mode: $([ "$ERROR_MODE_FULL" = "true" ] && echo "--errorfull (verbose)" || echo "--error (log)")"
+                echo ""
+                echo "--- Complete Raw.sh Execution Output ---"
+                echo "$clean_pipeline_output"
+                echo ""
+                echo "--- Basm Execution Output ---"
+                echo "$clean_basm_output"
+                echo ""
+                echo "--- build_output.asm Content ---"
+                echo "$clean_asm_content"
+                echo ""
+                echo "========================================="
+                echo ""
+            } >> "$error_file"
+
+            # Clean up temporary files
+            rm -f "$temp_pipeline_output" "$temp_basm_output"
+
+            echo "Error report appended to $error_file"
+            exit 0
         else
-            # Full pipeline
-            execute_file "silent" "./._/min/min" "$JS_FILE_PATH"
-            execute_file "silent" "./._/min/polish.sh" "$OUTPUT_JS"
-            execute_file "silent" "./build"
-            mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm"
-            execute_file "silent" "./arch" "$OUTPUT_JS"
-            mv_file "arch_output" "$WORKING_DIRECTORY/arch_output"
-            rm_file "$SCRIPT_DIR/output.js"
+            # ----- NORMAL MODE: run pipeline directly -----
+            run_pipeline
         fi
 
-        # Execute tree/build.sh with --verbose flag if verbose mode is active
-        if [ "$VERBOSE_MODE" = "true" ]; then
-            execute_file "silent" "./tree/build.sh" "--verbose"
-        else
-            execute_file "silent" "./tree/build.sh"
-        fi
-
-        # Check if binary output mode is active (--bin flag was used)
-        if [ "$BIN_OUTPUT_MODE" = "true" ]; then
-            local asm_file="$WORKING_DIRECTORY/build_output.asm"
-            generate_binary "$asm_file" "$BIN_OUTPUT_NAME"
-        elif [ "$ASM_MODE" = "true" ]; then
-            copy_asm_to_caller
-        else
-            execute_file "log" "./build_output.asm"
-        fi
-
-        # Display execution time if in log mode
-        if [ "$FORCE_LOG_MODE" = "true" ]; then
+        # Display execution time if in log mode (but NOT in error mode)
+        if [ "$FORCE_LOG_MODE" = "true" ] && [ "$ERROR_MODE" = "false" ]; then
             stop_timer
         fi
 
