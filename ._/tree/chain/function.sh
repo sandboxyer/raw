@@ -4,7 +4,7 @@
 # Reads function definition from arch_output file.
 # Appends the function to the parent build_output.asm
 # Enhanced: Proper variable scoping, string handling, and metadata generation
-# FIX: Proper newline handling in data extraction
+# FIX: Pre-declare ALL parameters (even without defaults) before Raw.sh
 
 set -e
 
@@ -45,18 +45,87 @@ if [ ! -f "$RAW_SCRIPT" ]; then
 fi
 
 # ----------------------------------------------------------------------
-# STEP 1: Create run_output by removing main chain tags and function definition
+# STEP 0: Parse function definition from arch_output BEFORE Raw.sh
 # ----------------------------------------------------------------------
-echo "Step 1: Creating run_output from arch_output..."
+echo "Step 0: Parsing function definition..."
 
-# Remove the outermost <chain-start> and <chain-end> tags
-# Also remove the function definition line
-# Keep inner content intact (including nested chains)
+# Read arch_output and extract function definition line
+FUNC_LINE=$(grep -o 'function[[:space:]]*[^(]*([^)]*)' "$INPUT_FILE" | head -1)
+if [ -z "$FUNC_LINE" ]; then
+    echo "Error: No function definition found in $INPUT_FILE"
+    exit 1
+fi
+
+# Extract function name
+FUNC_NAME=$(echo "$FUNC_LINE" | sed 's/function[[:space:]]*\([^(]*\)(.*/\1/' | tr -d '[:space:]')
+if [ -z "$FUNC_NAME" ]; then
+    echo "Error: Could not parse function name"
+    exit 1
+fi
+
+# Extract parameter list
+PARAMS_STR=$(echo "$FUNC_LINE" | sed 's/.*(\(.*\)).*/\1/')
+IFS=',' read -ra PARAMS <<< "$PARAMS_STR"
+
+# Arrays for parameter info
+declare -a PNAMES
+declare -a PDEFAULTS
+declare -a PTYPES
+
+# Parse each parameter
+for p in "${PARAMS[@]}"; do
+    # Trim whitespace
+    p=$(echo "$p" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [ -z "$p" ]; then continue; fi
+   
+    # Split on '='
+    if [[ "$p" == *=* ]]; then
+        name="${p%%=*}"
+        default="${p#*=}"
+        name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        default=$(echo "$default" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+       
+        # Determine type of default
+        if [[ "$default" =~ ^\".*\"$ ]]; then
+            dtype="string"
+            default="${default:1:${#default}-2}"   # strip quotes
+        elif [[ "$default" =~ ^-?[0-9]+$ ]]; then
+            dtype="number"
+        elif [[ "$default" =~ ^-?[0-9]*\.[0-9]+$ ]]; then
+            dtype="float"
+        else
+            dtype="variable"
+        fi
+    else
+        name="$p"
+        default=""
+        dtype="none"
+    fi
+   
+    PNAMES+=("$name")
+    PDEFAULTS+=("$default")
+    PTYPES+=("$dtype")
+done
+
+echo "✓ Function name: $FUNC_NAME"
+echo "✓ Parameters: ${#PNAMES[@]}"
+for i in "${!PNAMES[@]}"; do
+    echo "  - ${PNAMES[$i]} (default: '${PDEFAULTS[$i]}', type: ${PTYPES[$i]})"
+done
+echo ""
+
+# ----------------------------------------------------------------------
+# STEP 1: Create run_output by removing main chain tags and function definition
+#         AND prepend ALL parameter declarations
+# ----------------------------------------------------------------------
+echo "Step 1: Creating run_output from arch_output with parameter declarations..."
+
+# First, remove outer chain tags and function definition line (using awk)
 awk '
 BEGIN { chain_depth = 0; skip_line = 0 }
 {
     line = $0
-    
+   
     # Check for chain-start
     if (line ~ /<chain-start>/) {
         if (chain_depth == 0) {
@@ -66,7 +135,7 @@ BEGIN { chain_depth = 0; skip_line = 0 }
         }
         chain_depth++
     }
-    
+   
     # Check for chain-end
     if (line ~ /<chain-end>/) {
         chain_depth--
@@ -76,22 +145,46 @@ BEGIN { chain_depth = 0; skip_line = 0 }
             skip_line = 1
         }
     }
-    
+   
     # Remove function definition line
     if (line ~ /^[[:space:]]*function[[:space:]]*[^(]*\([^)]*\)/) {
         line = ""
         skip_line = 1
     }
-    
+   
     # Print line if not skipped
     if (!skip_line) {
         print line
     }
-    
+   
     # Reset skip flag
     skip_line = 0
 }
-' "$INPUT_FILE" > "$RUN_OUTPUT_FILE"
+' "$INPUT_FILE" > "$RUN_OUTPUT_FILE.tmp"
+
+# Prepend ALL parameter declarations wrapped in <js-start> tags
+{
+    for i in "${!PNAMES[@]}"; do
+        name="${PNAMES[$i]}"
+        default="${PDEFAULTS[$i]}"
+        dtype="${PTYPES[$i]}"
+        
+        if [ "$dtype" == "none" ]; then
+            # Parameter without default - declare as undefined
+            # This will create the storage, and the call site will set the proper type
+            echo "<js-start>    var ${name} = undefined;    <js-end>"
+        elif [ "$dtype" == "string" ]; then
+            # Wrap in double quotes and escape any internal double quotes
+            escaped_default="${default//\"/\\\"}"
+            echo "<js-start>    var ${name} = \"${escaped_default}\";    <js-end>"
+        else
+            echo "<js-start>    var ${name} = ${default};    <js-end>"
+        fi
+    done
+    cat "$RUN_OUTPUT_FILE.tmp"
+} > "$RUN_OUTPUT_FILE"
+
+rm -f "$RUN_OUTPUT_FILE.tmp"
 
 # Verify run_output was created and is not empty
 if [ ! -s "$RUN_OUTPUT_FILE" ]; then
@@ -99,7 +192,7 @@ if [ ! -s "$RUN_OUTPUT_FILE" ]; then
     exit 1
 fi
 
-echo "✓ run_output created successfully"
+echo "✓ run_output created successfully (with parameter declarations)"
 echo ""
 
 # ----------------------------------------------------------------------
@@ -114,7 +207,7 @@ RAW_SCRIPT_ABS="$(cd "$(dirname "$RAW_SCRIPT")" && pwd)/$(basename "$RAW_SCRIPT"
 if [ -f "$RAW_SCRIPT_ABS/.rawjs_private" ] || [ -n "$RAWJS_PRIVATE_MODE" ]; then
     # We're in a private copy - need to find the original Raw.sh
     ORIGINAL_RAW=""
-    
+   
     # Walk up the directory tree looking for the original Raw.sh
     CURRENT_DIR="$RAW_SCRIPT_ABS"
     while [ "$CURRENT_DIR" != "/" ]; do
@@ -124,7 +217,7 @@ if [ -f "$RAW_SCRIPT_ABS/.rawjs_private" ] || [ -n "$RAWJS_PRIVATE_MODE" ]; then
             break
         fi
     done
-    
+   
     if [ -n "$ORIGINAL_RAW" ]; then
         RAW_SCRIPT_ABS="$ORIGINAL_RAW"
     fi
@@ -159,76 +252,6 @@ echo "✓ Function body generated successfully"
 echo ""
 
 # ----------------------------------------------------------------------
-# STEP 3: Parse function definition from arch_output
-# ----------------------------------------------------------------------
-echo "Step 3: Parsing function definition..."
-
-# Read arch_output and extract function definition line
-FUNC_LINE=$(grep -o 'function[[:space:]]*[^(]*([^)]*)' "$INPUT_FILE" | head -1)
-if [ -z "$FUNC_LINE" ]; then
-    echo "Error: No function definition found in $INPUT_FILE"
-    exit 1
-fi
-
-# Extract function name
-FUNC_NAME=$(echo "$FUNC_LINE" | sed 's/function[[:space:]]*\([^(]*\)(.*/\1/' | tr -d '[:space:]')
-if [ -z "$FUNC_NAME" ]; then
-    echo "Error: Could not parse function name"
-    exit 1
-fi
-
-# Extract parameter list
-PARAMS_STR=$(echo "$FUNC_LINE" | sed 's/.*(\(.*\)).*/\1/')
-IFS=',' read -ra PARAMS <<< "$PARAMS_STR"
-
-# Arrays for parameter info
-declare -a PNAMES
-declare -a PDEFAULTS
-declare -a PTYPES
-
-# Parse each parameter
-for p in "${PARAMS[@]}"; do
-    # Trim whitespace
-    p=$(echo "$p" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    if [ -z "$p" ]; then continue; fi
-    
-    # Split on '='
-    if [[ "$p" == *=* ]]; then
-        name="${p%%=*}"
-        default="${p#*=}"
-        name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        default=$(echo "$default" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        # Determine type of default
-        if [[ "$default" =~ ^\".*\"$ ]]; then
-            dtype="string"
-            default="${default:1:${#default}-2}"
-        elif [[ "$default" =~ ^-?[0-9]+$ ]]; then
-            dtype="number"
-        elif [[ "$default" =~ ^-?[0-9]*\.[0-9]+$ ]]; then
-            dtype="float"
-        else
-            dtype="variable"
-        fi
-    else
-        name="$p"
-        default=""
-        dtype="none"
-    fi
-    
-    PNAMES+=("$name")
-    PDEFAULTS+=("$default")
-    PTYPES+=("$dtype")
-done
-
-echo "✓ Function name: $FUNC_NAME"
-echo "✓ Parameters: ${#PNAMES[@]}"
-for i in "${!PNAMES[@]}"; do
-    echo "  - ${PNAMES[$i]} (default: '${PDEFAULTS[$i]}', type: ${PTYPES[$i]})"
-done
-echo ""
-
-# ----------------------------------------------------------------------
 # STEP 3.5: Write function metadata for call generation
 # ----------------------------------------------------------------------
 echo "Step 3.5: Writing function metadata..."
@@ -249,30 +272,6 @@ echo "✓ Metadata written to $META_FILE"
 echo ""
 
 # ----------------------------------------------------------------------
-# STEP 4: Generate parameter data declarations
-# ----------------------------------------------------------------------
-echo "Step 4: Generating parameter data..."
-
-# Generate parameter data declarations for .data section
-PARAM_DATA=""
-for i in "${!PNAMES[@]}"; do
-    name="${PNAMES[$i]}"
-    dtype="${PTYPES[$i]}"
-    PARAM_DATA+="    ; Parameter: $name"$'\n'
-    PARAM_DATA+="    ${name} dq 0"$'\n'
-    PARAM_DATA+="    ${name}_type dq TYPE_UNDEFINED"$'\n'
-    
-    if [ "$dtype" == "string" ] && [ -n "${PDEFAULTS[$i]}" ]; then
-        strval="${PDEFAULTS[$i]}"
-        strval_esc=$(echo "$strval" | sed "s/'/''/g")
-        PARAM_DATA+="    ${FUNC_NAME}_${name}_default db '${strval_esc}', 0"$'\n'
-    elif [ "$dtype" == "float" ] && [ -n "${PDEFAULTS[$i]}" ]; then
-        fval="${PDEFAULTS[$i]}"
-        PARAM_DATA+="    ${FUNC_NAME}_${name}_default db '${fval}', 0"$'\n'
-    fi
-done
-
-# ----------------------------------------------------------------------
 # STEP 5: Extract data and function body from generated build_output.asm
 # ----------------------------------------------------------------------
 echo "Step 5: Extracting function body..."
@@ -289,15 +288,14 @@ while IFS= read -r line; do
         IN_DATA=0
         break
     fi
-    
+   
     if [ $IN_DATA -eq 1 ]; then
-        # Skip template lines
+        # Skip template lines but KEEP variable declarations
         if echo "$line" | grep -qE '^[[:space:]]*(;|COLOR_|TYPE_|true_str|false_str|null_str|undefined_str|hex_prefix|float_scale|float_ten|space|newline|$)'; then
             continue
         fi
-        
-        # Keep only actual data lines
-        # Ensure each line ends with newline
+       
+        # Keep only actual data lines (including variable declarations)
         LOCAL_DATA+="$line"$'\n'
     fi
 done < "$LOCAL_FILE"
@@ -314,26 +312,26 @@ while IFS= read -r line; do
         CAPTURE=1
         continue
     fi
-    
+   
     # If we're in the function and hit the exit syscall, stop capturing
     if [ $IN_FUNCTION -eq 1 ] && echo "$line" | grep -qE '^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60$'; then
         CAPTURE=0
         IN_FUNCTION=0
         continue
     fi
-    
+   
     # Skip the exit syscall lines
     if [ $IN_FUNCTION -eq 0 ] && echo "$line" | grep -qE '^[[:space:]]*(xor|syscall)'; then
         continue
     fi
-    
+   
     # Capture the function body
     if [ $CAPTURE -eq 1 ]; then
-        # Skip template comments
+        # Skip template comments but keep everything else
         if echo "$line" | grep -qE '^[[:space:]]*;.*(Your code here|Example usage|mov rax, 42|mov rdx, TYPE_NUMBER|call print|mov rax, newline|mov rdx, TYPE_STRING)'; then
             continue
         fi
-        
+       
         FUNCTION_BODY+="$line"$'\n'
     fi
 done < "$LOCAL_FILE"
@@ -359,7 +357,7 @@ for pname in "${PNAMES[@]}"; do
     fi
 done
 
-# Parse the original arch_output to find variables declared INSIDE the function
+# Parse the run_output to find variables declared INSIDE the function
 while IFS= read -r line; do
     if [[ "$line" =~ (var|let|const)[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
         var_name="${BASH_REMATCH[2]}"
@@ -374,14 +372,14 @@ mapfile -t idents < <(printf "%s\n" "${!RENAME_MAP[@]}" | awk '{ print length, $
 apply_renames() {
     local text="$1"
     local result="$text"
-    
+   
     for orig in "${idents[@]}"; do
         if [ -z "$orig" ]; then
             continue
         fi
-        
+       
         local new="${FUNC_NAME}_${orig}"
-        
+       
         result=$(echo "$result" | sed -E "
             s/\[${orig}\]/[${new}]/g
             s/\b${orig}_type\b/${new}_type/g
@@ -391,16 +389,15 @@ apply_renames() {
             s/\b${orig}\b/${new}/g
         ")
     done
-    
+   
     echo "$result"
 }
 
 # Apply renames to all components
 if [ ${#idents[@]} -gt 0 ]; then
-    PARAM_DATA=$(apply_renames "$PARAM_DATA")
     LOCAL_DATA=$(apply_renames "$LOCAL_DATA")
     FUNCTION_BODY=$(apply_renames "$FUNCTION_BODY")
-    
+   
     echo "✓ Renamed ${#idents[@]} local identifiers with prefix '${FUNC_NAME}_'"
 else
     echo "✓ No local identifiers to rename"
@@ -412,18 +409,8 @@ FUNCTION_CODE="${FUNC_NAME}:"$'\n'
 FUNCTION_CODE+="${FUNCTION_BODY}"$'\n'
 FUNCTION_CODE+="    ret"$'\n'
 
-# Combine parameter data and local data for insertion
-# Ensure proper separation with newlines
-ALL_DATA=""
-if [ -n "$PARAM_DATA" ]; then
-    ALL_DATA+="$PARAM_DATA"
-fi
-if [ -n "$LOCAL_DATA" ]; then
-    if [ -n "$ALL_DATA" ]; then
-        ALL_DATA+=$'\n'
-    fi
-    ALL_DATA+="$LOCAL_DATA"
-fi
+# Combine all data for insertion
+ALL_DATA="$LOCAL_DATA"
 
 echo "✓ Function body with scoped variables prepared"
 echo ""
