@@ -52,6 +52,7 @@ EXCLUDE_LIST=""
 EXCLUDE_DIRS_LIST=""
 BUILD_FILES_LIST=""
 BUILD_DIRS_LIST=""
+BUILD_INCLUDE_GIT=false
 # =============================================================================
 
 # =============================================================================
@@ -800,6 +801,7 @@ build_config_interface() {
   : > "$EXCLUDE_LIST"
   : > "$EXCLUDE_DIRS_LIST"
   : > "$BUILD_INCLUDE_LIST"
+  BUILD_INCLUDE_GIT=false
 
   BUILD_FILES_LIST="/tmp/build_files_$$.txt"
   BUILD_DIRS_LIST="/tmp/build_dirs_$$.txt"
@@ -916,7 +918,7 @@ build_config_interface() {
       shortened_msg=$(echo "$SELECTED_COMMIT_MSG" | cut -c1-30)
       echo "Source: ${short_hash} ${shortened_msg}"
     fi
-    echo "Output: $([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory") | Size: $(format_file_size "$build_size") | Files: $build_file_count | Excl: ${excl_files}f/${excl_dirs}d | InclFS: ${incl_files}"
+    echo "Output: $([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory") | Size: $(format_file_size "$build_size") | Files: $build_file_count | Excl: ${excl_files}f/${excl_dirs}d | InclFS: ${incl_files} | .git: $([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No")"
     echo ""
     if [ -s "$EXCLUDE_DIRS_LIST" ] || [ -s "$EXCLUDE_LIST" ]; then
       echo "Excluded:"
@@ -957,6 +959,7 @@ build_config_interface() {
     echo "7. Change source commit"
     echo "8. Toggle output format ($([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory"))"
     echo "9. Navigate filesystem to INCLUDE files"
+    echo "10. Toggle .git inclusion ($([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No"))"
     echo "s. Save config | l. Load config | d. Delete config"
     echo "0. Done | q. Quit"
     printf "Choice: "
@@ -1172,7 +1175,7 @@ build_config_interface() {
            esac
            rm -f /tmp/build_remove_dirs_$$.txt
          fi ;;
-      6) : > "$EXCLUDE_LIST"; : > "$EXCLUDE_DIRS_LIST"; : > "$BUILD_INCLUDE_LIST"; echo "All exclusions cleared"; sleep 1 ;;
+      6) : > "$EXCLUDE_LIST"; : > "$EXCLUDE_DIRS_LIST"; : > "$BUILD_INCLUDE_LIST"; BUILD_INCLUDE_GIT=false; echo "All exclusions cleared"; sleep 1 ;;
       7) # Change source commit
          if [ ! -f "$COMMIT_CACHE" ]; then
            echo "Building commit cache..."
@@ -1243,6 +1246,7 @@ build_config_interface() {
          rm -f "$FILTERED" ;;
       8) if [ "$BUILD_TAR" = true ]; then BUILD_TAR=false; else BUILD_TAR=true; fi; sleep 1 ;;
       9) navigate_filesystem_for_inclusion ;;
+      10) if [ "$BUILD_INCLUDE_GIT" = true ]; then BUILD_INCLUDE_GIT=false; else BUILD_INCLUDE_GIT=true; fi; sleep 1 ;;
       s|S)
         clear; echo "=== Save Build Configuration ==="
         list_saved_configurations || echo "No saved configurations yet."
@@ -1322,6 +1326,7 @@ build_config_interface() {
   echo "=== FINAL BUILD SUMMARY ==="
   echo "Source: $([ -z "$SELECTED_COMMIT" ] && echo "HEAD" || echo "$SELECTED_COMMIT_MSG")"
   echo "Output: $([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory")"
+  echo ".git included: $([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No")"
   local final_stats=$(calculate_build_stats)
   echo "Size: $(format_file_size $(echo "$final_stats" | cut -d'|' -f1)) | Files: $(echo "$final_stats" | cut -d'|' -f2)"
   echo "Excluded: $(wc -l < "$EXCLUDE_LIST") files, $(wc -l < "$EXCLUDE_DIRS_LIST") directories"
@@ -1354,6 +1359,7 @@ save_build_configuration() {
     echo "TAR=${BUILD_TAR}"
     echo "COMMIT=${BUILD_SELECTED_COMMIT:-HEAD}"
     echo "COMMIT_MESSAGE=${BUILD_SELECTED_COMMIT_MSG:-HEAD}"
+    echo "INCLUDE_GIT=${BUILD_INCLUDE_GIT}"
     echo "EXCLUDED_FILES_COUNT=$(wc -l < "$EXCLUDE_LIST" 2>/dev/null || echo 0)"
     echo "EXCLUDED_DIRECTORIES_COUNT=$(wc -l < "$EXCLUDE_DIRS_LIST" 2>/dev/null || echo 0)"
     echo "INCLUDED_FILES_COUNT=$(wc -l < "$BUILD_INCLUDE_LIST" 2>/dev/null || echo 0)"
@@ -1394,6 +1400,7 @@ load_build_configuration() {
         TAR=*) val=$(echo "$line" | cut -d= -f2-); if [ "$val" = "true" ]; then BUILD_TAR=true; else BUILD_TAR=false; fi ;;
         COMMIT=*) val=$(echo "$line" | cut -d= -f2-); if [ "$val" = "HEAD" ]; then BUILD_SELECTED_COMMIT=""; else BUILD_SELECTED_COMMIT="$val"; fi ;;
         COMMIT_MESSAGE=*) BUILD_SELECTED_COMMIT_MSG=$(echo "$line" | cut -d= -f2-) ;;
+        INCLUDE_GIT=*) val=$(echo "$line" | cut -d= -f2-); if [ "$val" = "true" ]; then BUILD_INCLUDE_GIT=true; else BUILD_INCLUDE_GIT=false; fi ;;
         EXCLUDED_FILE=*) echo "$line" | cut -d= -f2- >> "$tmp_excl" ;;
         EXCLUDED_DIRECTORY=*) echo "$line" | cut -d= -f2- >> "$tmp_dir" ;;
         INCLUDED_FILE=*) echo "$line" | cut -d= -f2- >> "$tmp_incl" ;;
@@ -1410,6 +1417,7 @@ load_build_configuration() {
 
   echo "Loaded build configuration: $save_name"
   echo "  Output: $([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory")"
+  echo "  .git included: $([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No")"
   echo "  Excluded files: $(wc -l < "$EXCLUDE_LIST")"
   echo "  Excluded directories: $(wc -l < "$EXCLUDE_DIRS_LIST")"
   echo "  Included from filesystem: $(wc -l < "$BUILD_INCLUDE_LIST")"
@@ -1548,6 +1556,7 @@ do_build() {
 
   log_message "Building: $build_name"
   log_message "Source: $([ -z "$BUILD_COMMIT" ] && echo "working tree" || echo "$BUILD_COMMIT_MSG")"
+  log_message ".git included: $([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No")"
 
   # STEP 1: extract files
   if [ -z "$BUILD_COMMIT" ]; then
@@ -1600,6 +1609,18 @@ do_build() {
     done < "$BUILD_INCLUDE_LIST"
   fi
 
+  # STEP 3.5: apply .git inclusion if requested
+  if [ "$BUILD_INCLUDE_GIT" = true ]; then
+    log_message "Including .git directory..."
+    if [ -d "$REPO_DIR/.git" ]; then
+      mkdir -p "$temp_build/.git"
+      cp -rp "$REPO_DIR/.git/." "$temp_build/.git/" 2>/dev/null || true
+      log_message "  + included .git directory"
+    else
+      log_message "  ! .git directory not found"
+    fi
+  fi
+
   # STEP 4: clean empty dirs and count files
   find "$temp_build" -type d -empty -delete 2>/dev/null
   local file_count=$(find "$temp_build" -type f | wc -l)
@@ -1624,6 +1645,7 @@ do_build() {
     echo "  Size: $(ls -lh "$tar_file" | awk '{print $5}')"
     echo "  Files: $file_count"
     echo "  Source: $BUILD_COMMIT_MSG"
+    echo "  .git included: $([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No")"
   else
     local out_dir="$BUILD_DIR/$build_name"
     [ -d "$out_dir" ] && rm -rf "$out_dir"
@@ -1636,6 +1658,7 @@ do_build() {
     echo "  Size: $(du -sh "$out_dir" | awk '{print $1}')"
     echo "  Files: $file_count"
     echo "  Source: $BUILD_COMMIT_MSG"
+    echo "  .git included: $([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No")"
   fi
 
   # Write info file
@@ -1646,6 +1669,7 @@ do_build() {
     echo "Source Commit: $(git rev-parse "$BUILD_COMMIT" 2>/dev/null || echo 'Staged')"
     echo "Commit Message: $BUILD_COMMIT_MSG"
     echo "Files: $file_count"
+    echo "Include Git: $([ "$BUILD_INCLUDE_GIT" = true ] && echo "Yes" || echo "No")"
   } > "$info_file"
 
   rm -rf "$temp_build" 2>/dev/null
