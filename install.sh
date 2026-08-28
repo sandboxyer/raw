@@ -77,37 +77,60 @@ detect_system() {
 }
 
 # -----------------------------------------------------------------------------
-# ALPINE-SPECIFIC NASM BINARY REPLACEMENT
+# ALPINE-SPECIFIC NASM BINARY REPLACEMENT (FIXED: No longer modifies source repo)
 # -----------------------------------------------------------------------------
 handle_alpine_nasm_replacement() {
   local system_type="$1"
 
   [ "$system_type" != "alpine" ] && return 0
 
-  log_message "Alpine Linux detected - checking for Alpine-specific NASM binary..."
+  log_message "Alpine Linux detected - will handle Alpine-specific NASM binary during installation..."
 
   local alpine_pack_nasm="$REPO_DIR/._/basm/alpine-pack/nasm-x86_64-linux"
-  local target_nasm_dir="$REPO_DIR/._/basm/x86_64-linux"
-  local target_nasm="$target_nasm_dir/nasm-x86_64-linux"
-
+  
   if [ ! -f "$alpine_pack_nasm" ]; then
     log_message "No Alpine-specific NASM binary found in alpine-pack (already processed or not present)"
     return 0
   fi
 
   log_message "Found Alpine-specific NASM binary in alpine-pack"
+  log_message "Will replace NASM binary in installation directory only (not source repo)"
+  
+  return 0
+}
 
-  mkdir -p "$target_nasm_dir"
+# -----------------------------------------------------------------------------
+# NEW FUNCTION: Handle Alpine NASM replacement in installation directory only
+# -----------------------------------------------------------------------------
+handle_alpine_nasm_in_installation() {
+  local system_type="$1"
+  local install_dir="$2"
 
-  # Remove any existing NASM binaries in target directory
-  find "$target_nasm_dir" -maxdepth 1 -name "nasm*" -type f -exec rm -f {} \; 2>/dev/null
+  [ "$system_type" != "alpine" ] && return 0
 
-  mv "$alpine_pack_nasm" "$target_nasm"
+  log_message "Checking for Alpine-specific NASM binary replacement in installation directory..."
+
+  local alpine_pack_nasm="$REPO_DIR/._/basm/alpine-pack/nasm-x86_64-linux"
+  local installed_nasm_dir="$install_dir/._/basm/x86_64-linux"
+  local installed_nasm="$installed_nasm_dir/nasm-x86_64-linux"
+
+  if [ ! -f "$alpine_pack_nasm" ]; then
+    log_message "No Alpine-specific NASM binary found in alpine-pack"
+    return 0
+  fi
+
+  if [ ! -d "$installed_nasm_dir" ]; then
+    log_message "Creating x86_64-linux directory in installation"
+    mkdir -p "$installed_nasm_dir"
+  fi
+
+  # Copy (not move) the Alpine-specific NASM binary to the installation directory
+  cp "$alpine_pack_nasm" "$installed_nasm"
   if [ $? -eq 0 ]; then
-    log_message "✓ Moved Alpine-specific NASM binary to: $target_nasm"
-    chmod +x "$target_nasm"
+    log_message "✓ Copied Alpine-specific NASM binary to: $installed_nasm"
+    chmod +x "$installed_nasm"
   else
-    log_message "⚠ Warning: Failed to move Alpine-specific NASM binary"
+    log_message "⚠ Warning: Failed to copy Alpine-specific NASM binary"
     return 1
   fi
 
@@ -1778,7 +1801,7 @@ show_help() {
   echo
   echo "This will install:"
   echo "  • RawJS runtime to $INSTALL_DIR"
-  echo "  • BASM tools to $INSTALL_DIR/._basm"
+  echo "  • BASM tools to $INSTALL_DIR/._/basm"
   echo "  • Global 'raw' command"
   echo "  • Global 'basm' command"
   echo
@@ -1842,7 +1865,7 @@ done
 
 log_message "Starting RawJS and BASM installation..."
 
-# Alpine NASM replacement
+# Alpine NASM replacement check (no longer modifies source)
 SYSTEM_TYPE=$(detect_system)
 handle_alpine_nasm_replacement "$SYSTEM_TYPE"
 
@@ -1913,11 +1936,15 @@ fi
 # Copy BASM files
 if [ "$INSTALL_BASM" = true ]; then
   log_message "Installing BASM tools..."
-  mkdir -p "$INSTALL_DIR/._basm"
-  if ! copy_files "$BASM_SOURCE_DIR" "$INSTALL_DIR/._basm" "BASM"; then
+  mkdir -p "$INSTALL_DIR/._/basm"
+  if ! copy_files "$BASM_SOURCE_DIR" "$INSTALL_DIR/._/basm" "BASM"; then
     echo "Error: BASM copy failed"
     exit 1
   fi
+  
+  # Handle Alpine-specific NASM replacement in installation directory only
+  handle_alpine_nasm_in_installation "$SYSTEM_TYPE" "$INSTALL_DIR"
+  
   if ! verify_basm_structure "$INSTALL_DIR"; then
     echo "Warning: BASM verification failed"
   fi
