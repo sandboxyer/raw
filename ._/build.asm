@@ -1,5 +1,14 @@
 ; build.asm – corrected template generator with proper stack alignment
 ; Numbers and Floats = Gold/Yellow, Booleans = Bright Green
+; FIX: output file is now opened with O_TRUNC so an older, longer
+;      build_output.asm never leaves stale code after the new template.
+; NEW: runtime helpers used by function calls (no new data labels were added,
+;      so function.sh's template-data filter keeps working unchanged):
+;        rt_to_double       - value/type -> double in xmm0
+;        rt_parse_double    - decimal string -> double in xmm0
+;        rt_to_double_str   - like rt_to_double, parses TYPE_FLOAT strings
+;        rt_capture_result  - makes a function result stable (heap copy)
+;        rt_demote_float    - TYPE_FLOAT -> truncated TYPE_NUMBER
 
 section .data
     filename db "./build_output.asm", 0
@@ -479,6 +488,149 @@ section .data
              db "    leave", 10
              db "    ret", 10, 10
              
+             db "; ==============================================", 10
+             db "; Runtime helpers for function calls", 10
+             db "; ==============================================", 10, 10
+             
+             db "rt_to_double:", 10
+             db "    ; Input: rax = value, rdx = type, xmm0 = double (kept for TYPE_FLOAT)", 10
+             db "    ; Output: xmm0 = numeric value as double (rax/rdx preserved)", 10
+             db "    cmp rdx, TYPE_FLOAT", 10
+             db "    je .done", 10
+             db "    cmp rdx, TYPE_NUMBER", 10
+             db "    je .from_int", 10
+             db "    cmp rdx, TYPE_BOOLEAN", 10
+             db "    je .from_int", 10
+             db "    pxor xmm0, xmm0", 10
+             db "    ret", 10
+             db ".from_int:", 10
+             db "    cvtsi2sd xmm0, rax", 10
+             db ".done:", 10
+             db "    ret", 10, 10
+             
+             db "rt_parse_double:", 10
+             db "    ; Input: rsi = pointer to null-terminated decimal string", 10
+             db "    ; Output: xmm0 = parsed double (0.0 for a null pointer)", 10
+             db "    push rbp", 10
+             db "    mov rbp, rsp", 10
+             db "    push rax", 10
+             db "    push rbx", 10
+             db "    push rcx", 10
+             db "    push rdx", 10
+             db "    push rsi", 10
+             db "    push r8", 10
+             db "    pxor xmm0, xmm0", 10
+             db "    xor rbx, rbx", 10
+             db "    test rsi, rsi", 10
+             db "    jz .finish", 10
+             db "    cmp byte [rsi], '-'", 10
+             db "    jne .int_part", 10
+             db "    mov rbx, 1", 10
+             db "    inc rsi", 10
+             db ".int_part:", 10
+             db "    movzx rax, byte [rsi]", 10
+             db "    cmp rax, '0'", 10
+             db "    jb .check_dot", 10
+             db "    cmp rax, '9'", 10
+             db "    ja .check_dot", 10
+             db "    mulsd xmm0, [float_ten]", 10
+             db "    sub rax, '0'", 10
+             db "    cvtsi2sd xmm1, rax", 10
+             db "    addsd xmm0, xmm1", 10
+             db "    inc rsi", 10
+             db "    jmp .int_part", 10
+             db ".check_dot:", 10
+             db "    cmp byte [rsi], '.'", 10
+             db "    jne .apply_sign", 10
+             db "    inc rsi", 10
+             db "    xor rcx, rcx", 10
+             db "    xor rdx, rdx", 10
+             db "    mov r8, 1", 10
+             db "    cvtsi2sd xmm2, r8", 10
+             db ".frac_loop:", 10
+             db "    movzx rax, byte [rsi]", 10
+             db "    cmp rax, '0'", 10
+             db "    jb .frac_done", 10
+             db "    cmp rax, '9'", 10
+             db "    ja .frac_done", 10
+             db "    cmp rdx, 17", 10
+             db "    jae .frac_skip", 10
+             db "    imul rcx, rcx, 10", 10
+             db "    sub rax, '0'", 10
+             db "    add rcx, rax", 10
+             db "    mulsd xmm2, [float_ten]", 10
+             db "    inc rdx", 10
+             db ".frac_skip:", 10
+             db "    inc rsi", 10
+             db "    jmp .frac_loop", 10
+             db ".frac_done:", 10
+             db "    cvtsi2sd xmm1, rcx", 10
+             db "    divsd xmm1, xmm2", 10
+             db "    addsd xmm0, xmm1", 10
+             db ".apply_sign:", 10
+             db "    test rbx, rbx", 10
+             db "    jz .finish", 10
+             db "    pxor xmm1, xmm1", 10
+             db "    subsd xmm1, xmm0", 10
+             db "    movsd xmm0, xmm1", 10
+             db ".finish:", 10
+             db "    pop r8", 10
+             db "    pop rsi", 10
+             db "    pop rdx", 10
+             db "    pop rcx", 10
+             db "    pop rbx", 10
+             db "    pop rax", 10
+             db "    leave", 10
+             db "    ret", 10, 10
+             
+             db "rt_to_double_str:", 10
+             db "    ; Input: rax = value, rdx = type", 10
+             db "    ; Output: xmm0 = double (TYPE_FLOAT values are parsed from the string at rax)", 10
+             db "    cmp rdx, TYPE_FLOAT", 10
+             db "    jne rt_to_double", 10
+             db "    push rsi", 10
+             db "    mov rsi, rax", 10
+             db "    call rt_parse_double", 10
+             db "    pop rsi", 10
+             db "    ret", 10, 10
+             
+             db "rt_capture_result:", 10
+             db "    ; Input: rax = value, rdx = type, xmm0 = double (valid for TYPE_FLOAT)", 10
+             db "    ; Output: rax = stable value (float/string text copied to the heap),", 10
+             db "    ;         rdx = type, xmm0 = numeric value as double", 10
+             db "    push rbp", 10
+             db "    mov rbp, rsp", 10
+             db "    push rsi", 10
+             db "    sub rsp, 8", 10
+             db "    cmp rdx, TYPE_FLOAT", 10
+             db "    je .copy_text", 10
+             db "    cmp rdx, TYPE_STRING", 10
+             db "    je .copy_string", 10
+             db "    call rt_to_double", 10
+             db "    jmp .done", 10
+             db ".copy_string:", 10
+             db "    pxor xmm0, xmm0", 10
+             db ".copy_text:", 10
+             db "    test rax, rax", 10
+             db "    jz .done", 10
+             db "    mov rsi, rax", 10
+             db "    call allocate_string", 10
+             db ".done:", 10
+             db "    add rsp, 8", 10
+             db "    pop rsi", 10
+             db "    leave", 10
+             db "    ret", 10, 10
+             
+             db "rt_demote_float:", 10
+             db "    ; Input: rax = value, rdx = type, xmm0 = double", 10
+             db "    ; Output: a TYPE_FLOAT value becomes a truncated TYPE_NUMBER in rax/rdx", 10
+             db "    cmp rdx, TYPE_FLOAT", 10
+             db "    jne .done", 10
+             db "    cvttsd2si rax, xmm0", 10
+             db "    mov rdx, TYPE_NUMBER", 10
+             db ".done:", 10
+             db "    ret", 10, 10
+             
              db "_start:", 10
              db "    ; Initialize heap", 10
              db "    call init_heap", 10, 10
@@ -495,16 +647,16 @@ section .text
     global _start
 
 _start:
+    ; open("./build_output.asm", O_WRONLY | O_CREAT | O_TRUNC, 0644)
     mov rax, 2
     mov rdi, filename
-    mov rsi, 0o101
-    or rsi, 0o100
+    mov rsi, 0o1101
     mov rdx, 0o644
     syscall
-    
+   
     cmp rax, 0
     jl exit_error
-    
+   
     mov [fd], rax
 
     mov rax, 1
